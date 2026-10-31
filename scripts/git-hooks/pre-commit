@@ -1,0 +1,61 @@
+#!/bin/sh
+# Pre-commit: не пускает в публичный репозиторий приватное и проверяет файлы коммита за секунды;
+# полный прогон — scripts/check.sh. Подключение (один раз): git config core.hooksPath scripts/git-hooks
+# Приватный репозиторий оснастки (общее рабочее дерево, --git-dir=…-ops.git) хранит именно то, что здесь
+# запрещено, — для него хук молчит.
+case "$(git rev-parse --absolute-git-dir 2>/dev/null)" in *-ops.git) exit 0 ;; esac
+
+# quotePath=false: иначе кириллическое имя приходит в кавычках с кодами и все проверки ниже по нему промахиваются.
+staged=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+bad=$(echo "$staged" | grep -E \
+  '(^|/)CLAUDE\.md$|^\.claude/|^docs/private/|^deploy/inventory/|^data/|(^|/)\.env|\.tfstate|(^|/)\.terraform/')
+if [ -n "$bad" ]; then
+  echo "pre-commit: эти файлы не должны попадать в публичный репозиторий (оснастка, приватное, данные, состояние):" >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  echo "Убрать из индекса: git rm --cached <файл>" >&2
+  exit 1
+fi
+
+# Крупные файлы (> 2 МБ) — почти наверняка случайность: фото клиентов, бинарник, дамп.
+big=$(echo "$staged" | while read -r f; do
+  [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 2097152 ] && echo "$f"
+done)
+if [ -n "$big" ]; then
+  echo "pre-commit: файлы больше 2 МБ:" >&2
+  echo "$big" | sed 's/^/  /' >&2
+  exit 1
+fi
+
+# Приметы приватного в версии из индекса. Без стража коммит не проверить — отказ, а не молчаливый пропуск.
+guard=.claude/hooks/public-guard.mjs
+if [ ! -f "$guard" ]; then
+  echo "pre-commit: нет $guard — коммит без проверки на приватное запрещён" >&2
+  exit 1
+fi
+if ! out=$(node "$guard" --staged); then
+  echo "pre-commit: $out" >&2
+  exit 1
+fi
+
+# Пределы размера — scripts/limits.mjs (единственный источник).
+if ! over=$(node scripts/limits.mjs sizes --cached); then
+  echo "pre-commit: превышен предел размера (делить по смыслу, предел не поднимать):" >&2
+  echo "$over" | sed 's/^/  /' >&2
+  exit 1
+fi
+
+gofiles=$(echo "$staged" | grep -E '\.go$')
+if [ -n "$gofiles" ]; then
+  # gofmt того же тулчейна, что go (toolchain в go.mod): другая версия форматирует иначе.
+  gf=$(go env GOROOT 2>/dev/null)/bin/gofmt
+  [ -x "$gf" ] || gf=gofmt
+  unformatted=$(echo "$gofiles" | xargs "$gf" -l)
+  if [ -n "$unformatted" ]; then
+    echo "pre-commit: не отформатировано gofmt:" >&2
+    echo "$unformatted" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
+exit 0

@@ -1,0 +1,59 @@
+#!/bin/sh
+# Pre-push: последний рубеж перед публичным репозиторием. Подключение — как у pre-commit:
+# git config core.hooksPath scripts/git-hooks. Ловит любой push, в том числе из скрипта, `bash -c` и xargs, —
+# то, чего хук push-guard (разбор команды в сессии) не увидит.
+#   1. Ссылки (только для github.com): refs/heads/main — только из локального main (`dev:main` выложил бы
+#      историю dev), метки refs/tags/v* — под своим именем, ветки проверок refs/heads/ci/* — только коммит-сирота
+#      scripts/ci-push.mjs (владелец 31.10.2026); удаление main и меток и прочие ссылки — отказ.
+#   2. Содержимое (любой адрес, кроме приватного репозитория оснастки): новые коммиты, их сообщения, метки
+#      и дерево вершины — через public-guard --pre-push. Отправленное не забрать, поэтому стража нет — отказ.
+# Приватный репозиторий оснастки узнаём по адресу (оканчивается на -ops или -ops.git), а не по имени remote:
+# имя можно перенаправить на публичный репозиторий.
+url=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+case "$url" in
+  *-ops | *-ops.git | *-ops.git/ | *-ops/) exit 0 ;;
+esac
+input=$(cat)
+
+case "$url" in
+  *github.com*)
+    bad=$(printf '%s\n' "$input" | while read -r local_ref local_sha remote_ref _; do
+      [ -z "$remote_ref" ] && continue
+      # Удаление: локальная сторона — нули (40 или 64 знака, sha256).
+      case "$local_sha" in *[!0]*) del=no ;; *) del=yes ;; esac
+      case "$remote_ref" in
+        refs/heads/main)
+          if [ "$del" = yes ]; then echo "  $remote_ref — удалять main нельзя"
+          elif [ "$local_ref" != refs/heads/main ]; then echo "  $local_ref -> $remote_ref — в main идёт только локальный main"; fi
+          ;;
+        refs/tags/v*)
+          if [ "$del" = yes ]; then echo "  $remote_ref — удалять метки версий нельзя"
+          elif [ "$local_ref" != "$remote_ref" ]; then echo "  $local_ref -> $remote_ref — метка идёт под своим именем"; fi
+          ;;
+        # `dev:ci/x` выложил бы всю историю dev; неизвестный коммит (rev-list не прочёл) — тоже отказ.
+        refs/heads/ci/*)
+          if [ "$del" = no ] && [ "$(git rev-list --parents -n 1 "$local_sha" 2>/dev/null | wc -w)" -ne 1 ]; then
+            echo "  $local_ref -> $remote_ref — в ci/* только коммит-сирота из scripts/ci-push.mjs (у этого есть история)"
+          fi
+          ;;
+        *) echo "  $remote_ref — не публикуется" ;;
+      esac
+    done)
+    if [ -n "$bad" ]; then
+      {
+        echo "pre-push: push в $2 отклонён:"
+        echo "$bad"
+        echo "Публикуются только main (из локального main) и метки vX.Y.Z — с «да» владельца, и ветки проверок ci/* (коммит-сирота); --no-verify запрещён."
+      } >&2
+      exit 1
+    fi
+    ;;
+esac
+
+# git запускает хук в корне отправляемого дерева; страж лежит в приватной зоне этого дерева.
+guard=.claude/hooks/public-guard.mjs
+if [ ! -f "$guard" ]; then
+  echo "pre-push: нет $guard — отправка без проверки содержимого запрещена" >&2
+  exit 1
+fi
+printf '%s\n' "$input" | node "$guard" --pre-push "$1"

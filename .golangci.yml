@@ -1,0 +1,81 @@
+# Конфиг golangci-lint v2 (проверено на 2.15.0: golangci-lint config verify).
+# Правило проекта — ноль находок. Исключение либо здесь с причиной, либо
+# //nolint:правило // причина в коде. Молча игнорировать нельзя.
+# Сервис публичный и принимает файлы из сети, поэтому gosec — целиком, без исключений
+# G301/G302/G304/G306: права 0600/0700 и os.Root — требование, а не помеха (docs/specs/0.1/decisions.md).
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec
+    - revive
+    - errorlint # ошибки через %w и errors.Is/As, а не сравнение строк и приведение типов
+    - noctx     # context.Context во всём I/O — ловит запросы без него
+    - bodyclose # незакрытый Body утекает соединениями
+    - depguard  # запрещённые пакеты (ниже); слои пакетов добавит спека MVP
+    - forbidigo # запрещённые вызовы (ниже)
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: var-declaration
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    depguard:
+      rules:
+        main:
+          list-mode: lax
+          deny:
+            # id альбома, токены, соль и cookie — секреты: предсказуемый генератор их выдаёт.
+            - pkg: math/rand
+              desc: "только crypto/rand: id, токены и соль должны быть непредсказуемы"
+            - pkg: math/rand/v2
+              desc: "только crypto/rand: id, токены и соль должны быть непредсказуемы"
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # Клиент без тайм-аута висит вечно на медленном ответе — свой http.Client с Timeout.
+        - pattern: ^http\.DefaultClient$
+          msg: "свой http.Client с Timeout"
+        - pattern: ^http\.(Get|Head|Post|PostForm)$
+          msg: "это http.DefaultClient без тайм-аута — свой http.Client с Timeout"
+        # Сервер без ReadHeaderTimeout/ReadTimeout держит соединения медленного клиента (Slowloris).
+        - pattern: ^http\.(ListenAndServe|ListenAndServeTLS|Serve|ServeTLS)$
+          msg: "свой http.Server с тайм-аутами и MaxHeaderBytes"
+  exclusions:
+    generated: lax
+    paths:
+      - .gotmp
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec    # тесты сами создают файлы с нарочно странными правами и содержимым
+          - errcheck
+          - depguard # тестовые изображения генерируются детерминированно, с зерном (math/rand/v2)
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - .gotmp
