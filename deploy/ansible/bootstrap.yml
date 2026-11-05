@@ -1,0 +1,42 @@
+---
+# Первый подъём (способ A, design 002 §4, §7): под root или пользователем образа (bootstrap_user) создаётся
+# администратор, закрывается SSH, ставится фильтр и белый список команд агента провайдера; затем
+# администратор отключает пользователя образа.
+# Запускается, только если входа администратора ещё нет; дальше — site.yml (эти роли в нём тоже).
+- name: Администратор, SSH и фильтр под первым входом
+  hosts: all
+  remote_user: "{{ bootstrap_user }}"
+  become: true
+  vars:
+    bootstrap_connect_user: "{{ bootstrap_user }}"
+    # Соединение и sudo: аргументы ssh — те же, что у пробных входов роли; пароль sudo — из vault.
+    ansible_ssh_common_args: "{{ sa_ssh_args | map('quote') | join(' ') }}"
+    ansible_become_password: "{{ vault_admin_password }}"
+  roles:
+    - role: bootstrap
+    - role: nftables
+    # Агент провайдера — сразу: с настройками образа он весь прогон открыт для команд из панели (design §10).
+    - role: guest_agent
+  post_tasks:
+    # После закрытия root и до блокировки пользователя образа: у него ещё есть sudo без пароля.
+    - name: Полное обновление пакетов
+      ansible.builtin.include_role:
+        name: bootstrap
+        tasks_from: full_upgrade.yml
+
+# Пользователь образа блокируется уже под администратором: оболочка nologin и снятый sudoers оборвали бы
+# задачи прогона, идущего от его имени.
+- name: Блокировка пользователя образа под администратором
+  hosts: all
+  remote_user: "{{ admin_user }}"
+  become: true
+  vars:
+    bootstrap_connect_user: "{{ admin_user }}"
+    # Соединение и sudo: аргументы ssh — те же, что у пробных входов роли; пароль sudo — из vault.
+    ansible_ssh_common_args: "{{ sa_ssh_args | map('quote') | join(' ') }}"
+    ansible_become_password: "{{ vault_admin_password }}"
+  tasks:
+    - name: Блокировка пользователя образа
+      ansible.builtin.include_role:
+        name: bootstrap
+        tasks_from: image_user.yml

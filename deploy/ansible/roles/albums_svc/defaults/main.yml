@@ -1,0 +1,17 @@
+---
+# Настройки сервиса по умолчанию — пределы 001 §6 (design 001). Inventory может переопределить любую (group_vars
+# сильнее defaults роли). Обязательные значения без умолчаний — из inventory: albums_subuid, albums_svc_image,
+# albums_owners (список владельцев с sha256 токенов), albums_domain (-e provision.sh) и vault_albums_master.
+albums_svc_limits:
+  page_bytes: 15728640
+  pages: 300
+  album_bytes: 1073741824
+  title_len: 200
+  max_days: 366
+albums_svc_accept_webp: false
+albums_svc_unpublished_ttl: 24h
+albums_svc_disk_reserve_bytes: 2147483648
+albums_svc_login:
+  per_album_ip: 5/15m
+  per_ip: 20/1h
+  per_album: 20/24h

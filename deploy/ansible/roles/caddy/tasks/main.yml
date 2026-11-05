@@ -1,0 +1,249 @@
+---
+# Caddy 2.11.7 из apt-репозитория Caddy (design 002 §8). Порядок: пользователь и группа (как их создаёт пакет) и
+# каталог /var/lib/caddy, ключ репозитория по отпечатку, источник и закрепление версии, конфигурация юнита и
+# Caddyfile (ДО пакета, force-confold: иначе после обрыва между пакетом и Caddyfile Caddy отдавал бы пакетную
+# витрину), установка при policy-rc.d 101, затем `caddy validate` отдельной задачей до запуска. `admin off` в
+# Caddyfile: reload невозможен, обработчик — daemon-reload и restart.
+- name: Домен — допустимое имя узла
+  ansible.builtin.assert:
+    that: albums_domain is defined and albums_domain is regex(caddy_domain_re)
+    quiet: true
+    fail_msg: albums_domain должен быть именем узла из строчных латинских букв, цифр и дефисов (из inventory, -e provision.sh)
+
+- name: Группа caddy
+  ansible.builtin.group:
+    name: caddy
+    system: true
+
+- name: Пользователь caddy (как у пакета, без входа и без subuid; дом — каталог состояния)
+  ansible.builtin.user:
+    name: caddy
+    group: caddy
+    system: true
+    home: "{{ caddy_home }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+    comment: Caddy web server
+
+# Без дома ACME-аккаунт и сертификаты Caddy негде хранить: TLS на аренде не поднялся бы (на стенде порт 443 это не видит).
+- name: Каталог состояния Caddy (сертификаты, ACME) — caddy, 0700
+  ansible.builtin.file:
+    path: "{{ caddy_home }}"
+    state: directory
+    owner: caddy
+    group: caddy
+    mode: "0700"
+
+# Ключ сверяется до записи в /etc/apt: скрипт запускается на контроллере (файл репозитория, соединение local) и
+# требует ровно один основной ключ с нужным отпечатком — apt доверил бы каждому ключу файла. Итоговый файл на
+# хосте проверяет verify_caddy.
+- name: Ключ репозитория Caddy — отпечаток основного ключа (на контроллере)
+  ansible.builtin.command:
+    argv: [python3, -I, "-", "{{ caddy_key_src }}"]
+    stdin: "{{ lookup('ansible.builtin.file', 'key_fingerprints.py') }}"
+    chdir: /
+  delegate_to: localhost
+  become: false
+  register: caddy_key_src_fp
+  changed_when: false
+
+- name: Ключ репозитория Caddy — ровно один основной ключ, отпечаток как в design
+  ansible.builtin.assert:
+    that: (caddy_key_src_fp.stdout | from_json).primary == [caddy_key_fingerprint]
+    quiet: true
+    fail_msg: файл ключа репозитория Caddy не содержит ровно одного основного ключа с ожидаемым отпечатком (design 002 §8)
+
+- name: Каталог ключей apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ключ репозитория Caddy
+  ansible.builtin.copy:
+    src: "{{ caddy_key_src }}"
+    dest: "{{ caddy_key_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Источник apt репозитория Caddy (Signed-By)
+  ansible.builtin.template:
+    src: caddy-stable.sources.j2
+    dest: "{{ caddy_sources_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: caddy_sources
+
+- name: Закрепление версии Caddy и отключение остального из его репозитория
+  ansible.builtin.template:
+    src: caddy.pref.j2
+    dest: "{{ caddy_prefs_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Кандидата нет — списки пакетов не знают репозиторий Caddy (источник появился или списки сброшены): обновить. Для
+# пакета, которого в списках нет, apt-cache policy печатает пустоту с кодом 0, поэтому ищется именно «Candidate: <цифра>».
+- name: Кандидат пакета caddy
+  ansible.builtin.command:
+    argv: [apt-cache, policy, caddy]
+  register: caddy_candidate
+  changed_when: false
+
+- name: Обновление списков пакетов (новый источник или нет кандидата)
+  ansible.builtin.apt:
+    update_cache: true
+  when: "caddy_sources.changed or caddy_candidate.stdout is not search('Candidate: [0-9]')"  # noqa: no-handler
+
+# Конфигурация юнита, окружение и Caddyfile — до пакета: сервис никогда не стартует с чужими настройками.
+- name: Каталоги Caddy и drop-in юнита
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ caddy_dir }}"
+    - "{{ caddy_dropin_dir }}"
+
+- name: Окружение Caddy (домен из inventory)
+  ansible.builtin.template:
+    src: albums.env.j2
+    dest: "{{ caddy_env_dest }}"
+    owner: root
+    group: caddy
+    mode: "0640"
+  notify: restart caddy
+
+- name: Drop-in юнита Caddy (EnvironmentFile, суженные права)
+  ansible.builtin.copy:
+    src: "{{ caddy_dropin_src }}"
+    dest: "{{ caddy_dropin_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart caddy
+
+# Пока пакета нет, validate нечем: Caddyfile кладётся без проверки, и её делает отдельная задача ниже, до запуска.
+# Пакет уже стоит (повторный прогон, смена Caddyfile) — проверка идёт на временном файле до подмены.
+- name: Бинарник Caddy уже есть?
+  ansible.builtin.stat:
+    path: /usr/bin/caddy
+  register: caddy_bin
+
+- name: Caddyfile
+  ansible.builtin.copy:
+    src: "{{ caddy_caddyfile_src }}"
+    dest: "{{ caddy_dir }}/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ caddy_validate_cmd if caddy_bin.stat.exists else omit }}"
+  notify: restart caddy
+
+# policy-rc.d: свой файл — с меткой, остаток от оборванного прогона снимается; чужой (образ провайдера или
+# контейнера) — ошибка, а не тихий пропуск: чужой запрет запуска нельзя ни снять, ни оставить вслепую.
+- name: Состояние policy-rc.d
+  ansible.builtin.stat:
+    path: "{{ caddy_policy_rc }}"
+    checksum_algorithm: sha256
+  register: caddy_policy_stat
+
+- name: Файл policy-rc.d — только наш или никакого
+  ansible.builtin.assert:
+    that: not caddy_policy_stat.stat.exists or caddy_policy_stat.stat.checksum == (caddy_policy_content | hash('sha256'))
+    quiet: true
+    fail_msg: >-
+      {{ caddy_policy_rc }} уже есть и не наш (нет метки {{ caddy_policy_marker }}): запрет запуска служб чужой, роль его не
+      трогает и не обходит — уберите файл или выясните, чей он (design 002 §8)
+
+- name: Остаток нашего policy-rc.d от оборванного прогона убран
+  ansible.builtin.file:
+    path: "{{ caddy_policy_rc }}"
+    state: absent
+
+- name: Установленная версия Caddy
+  ansible.builtin.command:
+    argv: [dpkg-query, -W, "-f=${Version}", caddy]
+  register: caddy_installed
+  changed_when: false
+  failed_when: caddy_installed.rc not in [0, 1]
+
+- name: Установка Caddy при policy-rc.d 101
+  when: caddy_installed.rc != 0 or not caddy_installed.stdout.startswith(caddy_version)
+  block:
+    - name: Файл policy-rc.d запрещает запуск служб на время установки
+      ansible.builtin.copy:
+        content: "{{ caddy_policy_content }}"
+        dest: "{{ caddy_policy_rc }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    # force-confold: свой Caddyfile пакет не затирает; версия — по закреплению и по имени пакета. Смена версии при
+    # запрете запуска не перезапускает службу — перезапуск за обработчиком.
+    - name: Пакет Caddy ровно закреплённой версии
+      ansible.builtin.apt:
+        name: "caddy={{ caddy_version }}*"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        dpkg_options: force-confold,force-confdef
+      notify: restart caddy
+  always:
+    - name: Файл policy-rc.d убран
+      ansible.builtin.file:
+        path: "{{ caddy_policy_rc }}"
+        state: absent
+
+- name: Версия Caddy после установки
+  ansible.builtin.command:
+    argv: [/usr/bin/caddy, version]
+  register: caddy_version_out
+  changed_when: false
+  failed_when: not caddy_version_out.stdout.startswith('v' ~ caddy_version)
+
+- name: Каталог страницы ошибок
+  ansible.builtin.file:
+    path: "{{ caddy_errors_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Страница «Альбом не найден» для Caddy
+  ansible.builtin.copy:
+    src: "{{ caddy_notfound_src }}"
+    dest: "{{ caddy_errors_dir }}/notfound.html"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Проверка до запуска: плохой Caddyfile роняет прогон здесь, служба ещё не (пере)запущена обработчиком.
+- name: Caddyfile проходит caddy validate (домен — как в юните)
+  ansible.builtin.command:
+    argv: [/usr/bin/caddy, validate, --adapter, caddyfile, --config, "{{ caddy_dir }}/Caddyfile"]
+  environment:
+    ALBUMS_DOMAIN: "{{ albums_domain }}"
+  changed_when: false
+
+# caddy-api.service из пакета поднимает Caddy с API по HTTP (admin) — в Caddyfile `admin off`, юнит не нужен.
+- name: Служба caddy-api замаскирована
+  ansible.builtin.systemd_service:
+    name: caddy-api.service
+    masked: true
+
+- name: Службе Caddy — перечитать юниты, включить и запустить
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Применить отложенный перезапуск Caddy
+  ansible.builtin.meta: flush_handlers

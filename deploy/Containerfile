@@ -1,0 +1,40 @@
+# Образ albums-svc: многоступенчатая сборка, в итоге — один статический бинарник без оболочки и пакетов.
+# Сборка из корня репозитория:
+#   podman build --ignorefile deploy/Containerfile.containerignore -f deploy/Containerfile -t albums-svc .
+# Контекст ограничен белым списком в deploy/Containerfile.containerignore. Флаг --ignorefile обязателен: сам
+# по себе podman (проверено на 4.9) подхватывает только .containerignore в корне контекста.
+# Обе базы — по дайджесту индекса (повторяемая сборка); обновляются осознанно, вместе с проверкой образа.
+
+# Сборка. Тег оставлен рядом с дайджестом ради читаемости; пинит именно дайджест.
+FROM docker.io/library/golang:1.27@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS build
+
+# Модули тянем отдельным слоем: он не пересобирается от правок кода. go.sum может отсутствовать, пока
+# нет внешних зависимостей, — поэтому маска.
+# GOTOOLCHAIN=local: Go не скачивает другой тулчейн из сети по строке toolchain в go.mod — сборка идёт
+# только тем Go, что в образе по дайджесту; несовпадение версии — ошибка, а не тихая загрузка.
+ENV GOTOOLCHAIN=local
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+
+# Только то, что входит в сервис (не весь репозиторий: в нём приватные и стендовые файлы).
+# web/viewer — листалка, которая встраивается в бинарник через embed; готовая сборка (имена с хэшем).
+COPY cmd ./cmd
+COPY internal ./internal
+COPY web ./web
+
+# CGO выключен: статический бинарник, не зависит от libc итогового образа. -trimpath — в бинарнике нет
+# путей сборки; -s -w — без отладочных таблиц (меньше размер, нет путей).
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/albums-svc ./cmd/albums-svc
+
+# Итог: distroless без оболочки, пользователь nonroot (65532) задан в базе — внутри контейнера не root.
+# Каталоги /run/albums-svc, /data и /etc/albums-svc — точки монтирования юнита Quadlet; сам образ в них
+# ничего не хранит (корневая ФС в юните — только для чтения).
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
+
+COPY --from=build --chown=0:0 --chmod=0555 /out/albums-svc /albums-svc
+
+# Юнит Quadlet задаёт тот же пользователь явно (User=65532); образ сам по себе тоже не стартует от root.
+USER 65532:65532
+ENTRYPOINT ["/albums-svc"]
+CMD ["-config", "/etc/albums-svc/config.json"]

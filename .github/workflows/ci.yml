@@ -1,0 +1,148 @@
+name: CI
+
+# Проверки идут на ветках ci/<имя>: в них node scripts/ci-push.mjs кладёт коммит-сироту (без истории dev).
+# workflow_dispatch — ручной запуск на выбранной ветке. pull_request_target не используется: он выдал бы
+# коду из чужой ветки токен с правом записи, а секретов и внешних вкладов здесь нет.
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новая отправка той же ветки отменяет прежний прогон: ветка одноразовая, старый результат не нужен.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Версия — из go.mod (go + toolchain), как её читает scripts/check.sh. cache: false — go.sum пока нет,
+      # а кэш без него даёт предупреждение; ноль warnings — правило проекта.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.11.1"
+
+      # Те же версии, что на машине разработки. check.sh ищет их в GOPATH/bin, поэтому go install.
+      - name: golangci-lint и govulncheck
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      # Бинарник с проверкой sha256 (значение — из метаданных релиза): подмена архива не пройдёт.
+      - name: gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # shellcheck есть в образе ubuntu-24.04; версию печатаем, чтобы расхождение с локальной было видно в логе.
+      - name: версии инструментов
+        run: |
+          go version
+          node --version
+          shellcheck --version | sed -n 2p
+          gitleaks version
+          "$(go env GOPATH)/bin/golangci-lint" --version
+          "$(go env GOPATH)/bin/govulncheck" -version | head -n 1
+
+      # --race: gcc на раннере есть; --vuln: уязвимости в зависимостях. Полный набор, без послаблений.
+      - name: scripts/check.sh
+        run: scripts/check.sh --race --vuln
+
+      # Случаи ci-push.mjs пока не входят в check.sh (правка check.sh — за оркестратором); когда войдут, шаг убрать.
+      - name: случаи ci-push
+        run: node scripts/ci-push-cases.mjs
+
+  # Разведка раннера: есть ли KVM и контейнерный движок. От ответа зависит, можно ли проверять роль Ansible
+  # на Debian 13 в виртуальной машине прямо в CI. Ничего не проверяет и не падает.
+  probe:
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    steps:
+      - name: раннер
+        run: |
+          uname -a
+          nproc
+          free -h
+          ls -l /dev/kvm || echo "нет /dev/kvm"
+          podman --version || echo "podman: нет"
+          docker --version || echo "docker: нет"
+
+  # Полный стенд раскатки (design 002 §12, П2): цель Debian 13 с systemd в rootful Podman раннера, все роли с
+  # albums-runtime (linger, ACL, образ по дайджесту, Quadlet, healthcheck), /v1/health от caddy, перезапуск цели,
+  # поток копии и все мутации. Образ сервиса собирается тут же из deploy/Containerfile (модуль контракта api/albums
+  # берётся по метке v0.1.0 с публичного прокси Go) и кладётся в одноразовый реестр стенда. Секретов нет: ключи,
+  # пароли vault и age стенда — случайные на запуск, в $RUNNER_TEMP. SKIP любого шага — провал (deploy/tests/provision/ci.sh).
+  stand-full:
+    timeout-minutes: 90
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Podman раннера, сеть, диапазон subuid
+        run: bash deploy/tests/provision/ci.sh prepare
+
+      - name: Цель и образ сервиса
+        run: |
+          bash deploy/tests/provision/ci.sh run up
+          bash deploy/tests/provision/ci.sh run converge_image
+
+      - name: converge (bootstrap, site с albums-runtime)
+        run: |
+          bash deploy/tests/provision/ci.sh run converge_bootstrap
+          bash deploy/tests/provision/ci.sh run converge_site
+
+      - name: idempotence_full
+        run: bash deploy/tests/provision/ci.sh run idempotence_full
+
+      - name: Проверки хоста и сервиса
+        run: |
+          rc=0
+          for step in verify_ssh verify_nft verify_host verify_acl verify_service verify_health; do
+            bash deploy/tests/provision/ci.sh run "$step" || rc=1
+          done
+          exit "$rc"
+
+      - name: Перезапуск цели и поток копии
+        run: |
+          bash deploy/tests/provision/ci.sh run verify_after_restart
+          bash deploy/tests/provision/ci.sh run verify_backup_stream
+
+      - name: Мутации
+        run: |
+          rc=0
+          for step in mutate_restore_a mutate_restore_b mutate_restore_c mutate_restore_d mutate_caddy mutate_caddy_b \
+            mutate_policy mutate_host mutate_backup; do
+            bash deploy/tests/provision/ci.sh run "$step" || rc=1
+          done
+          exit "$rc"
+
+      - name: Состояние цели при провале
+        if: failure()
+        run: bash deploy/tests/provision/ci.sh diag
+
+      - name: Стенд убран
+        if: always()
+        run: bash deploy/tests/provision/ci.sh run down

@@ -1,0 +1,12 @@
+---
+# Полное обновление пакетов — только в bootstrap.yml, после закрытия root: долгий шаг не держит окно.
+# В site.yml его нет: иначе каждый прогон менялся бы при любом свежем пакете, а обновления безопасности
+# приходят от unattended-upgrades.
+- name: Полное обновление пакетов
+  ansible.builtin.apt:
+    upgrade: full
+    update_cache: true
+    cache_valid_time: 3600
+    dpkg_options: force-confold,force-confdef
+  environment:
+    DEBIAN_FRONTEND: noninteractive

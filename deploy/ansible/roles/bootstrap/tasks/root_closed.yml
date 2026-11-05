@@ -1,0 +1,13 @@
+---
+# Сюда прогон доходит только после проверенного входа и sudo администратора (admin.yml, sshd.yml).
+# Вход root уже закрыт в sshd (00-sa.conf); здесь же убираются ключи и пароль, чтобы не осталось
+# ни входа по консоли с паролем без ведома владельца, ни забытого ключа провайдера.
+- name: Ключи root удалены
+  ansible.builtin.file:
+    path: /root/.ssh/authorized_keys
+    state: absent
+
+- name: Пароль root заблокирован
+  ansible.builtin.user:
+    name: root
+    password_lock: true

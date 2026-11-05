@@ -1,0 +1,37 @@
+---
+# Пример ~/inventory/ansible/group_vars/all/vars.yml (не секретное; значения выдуманные). Домен, имена
+# администратора и пользователя бэкапа provision.sh передаёт сам (-e) из provision.env. Роли И3 и И4
+# дополняют список своими переменными. Секрет сервиса vault_albums_master — в vault.yml.
+
+# Файл читается Ansible как Jinja — это код, а не данные: inventory правится только в сессии sa-ops ops-ВМ
+# или просматривается как код. Пароль для sudo задают плеи из vault_admin_password (vault.yml).
+
+# Открытые ключи администратора (authorized_key, exclusive). Нужен хотя бы один, и ключ сервера раскатки
+# (~/.ssh/id_server.pub) обязан быть в списке: иначе роль bootstrap откажется закрывать root.
+admin_ssh_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleAdminKeyNotARealKeyxxxxxxxxxxxxx sa-server"
+
+# Диапазон subuid/subgid пользователя albums: "<начало>:<число>", начало >= 100000, конец <= 524287,
+# число >= 65536; ни с чем не пересекается. Смена потом — chown данных (дорого).
+albums_subuid: "200000:65536"
+
+# Образ сервиса из GHCR строго по дайджесту (решение 002-17); дайджест — после выпуска образа.
+albums_svc_image: "ghcr.io/example/albums-svc@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# Владельцы (фотографы): слаг (в адрес не входит), студия, квота, число альбомов и токены загрузки — только sha256
+# (сам токен выдаёт программа: albums-svc -gen-token, строка sha256 идёт сюда, токен — владельцу). Ровно эти поля
+# попадают в config.json сервиса; хэши токенов уникальны среди всех владельцев.
+albums_owners:
+  - slug: p1
+    studio: Студия Пример
+    quota_bytes: 10737418240
+    max_albums: 500
+    tokens:
+      - name: ноутбук
+        sha256: "0000000000000000000000000000000000000000000000000000000000000001"
+
+# Забор копий: открытый ключ пользователя бэкапа (закрытый — ~/.ssh/id_backup раскатки) и открытый ключ age
+# владельца (закрытый — в файле секретов). Предел времени службы — по замеру на аренде.
+backup_ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBackupKeyNotARealKeyxxxxxxxxxxx sa-backup"
+backup_age_recipient: "age1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce"
+backup_runtime_max: "6h"

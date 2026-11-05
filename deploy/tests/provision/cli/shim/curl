@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Поддельный curl для provision_cli (ВР-15): сети нет, архив провайдера и SHA256SUMS отдаются из файлов теста. Пишет
+# argv в $SHIM_LOG. FAKE_ZIP — файл «архива» (обязателен); FAKE_SUMS: ok (по умолчанию; хэш считается по FAKE_ZIP),
+# bad (чужой хэш у нужного имени), missing (нет строки с именем архива); FAKE_CURL_FAIL=1 — отказ как у curl -f (22).
+set -uo pipefail
+printf 'CURL %s\n' "$*" >>"$SHIM_LOG"
+out='' url=''
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+	case ${args[i]} in
+		-o) out=${args[i + 1]} ;;
+	esac
+	url=${args[i]}
+done
+[ "${FAKE_CURL_FAIL:-}" != 1 ] || exit 22
+[ -n "$out" ] && [ -n "${FAKE_ZIP:-}" ] || exit 2
+base=${url##*/}
+case $base in
+	*_SHA256SUMS)
+		name=${base%_SHA256SUMS}_linux_amd64.zip
+		sum=$(sha256sum <"$FAKE_ZIP" | cut -d' ' -f1)
+		case ${FAKE_SUMS:-ok} in
+			bad) sum=$(printf '%064d' 0) ;;
+			missing) name=terraform-provider-other_linux_arm64.zip ;;
+		esac
+		printf '%s  %s\n%s  %s\n' "$(printf '%064d' 1)" "${base%_SHA256SUMS}_linux_arm64.zip" "$sum" "$name" >"$out"
+		;;
+	*.zip) cp -- "$FAKE_ZIP" "$out" ;;
+	*) exit 3 ;;
+esac
+exit 0

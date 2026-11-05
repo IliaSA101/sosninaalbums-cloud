@@ -1,0 +1,7 @@
+---
+# Пример ~/inventory/ansible/hosts.yml. Файл пишет provision.sh apply по `tofu output` — вручную не нужен;
+# адрес из документации (192.0.2.0/24).
+all:
+  hosts:
+    server:
+      ansible_host: 192.0.2.10

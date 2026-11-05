@@ -1,0 +1,90 @@
+---
+# Проверки значений inventory и состояния ДО первого изменения (design 002 §4, §9): длины, формат, диапазон
+# subuid, группа albums, список владельцев. Секреты — no_log.
+- name: Обязательные переменные заданы
+  ansible.builtin.assert:
+    that:
+      - albums_domain is defined
+      - albums_subuid is defined and albums_subuid is string
+      - albums_svc_image is defined
+      - albums_owners is defined and albums_owners is sequence and albums_owners is not string
+      - vault_albums_master is defined
+    quiet: true
+    fail_msg: нужны albums_domain, albums_subuid, albums_svc_image, albums_owners и vault_albums_master (inventory, vault)
+
+- name: Диапазон subuid и образ — по формату
+  ansible.builtin.assert:
+    that:
+      - albums_subuid is regex('^[0-9]{1,9}:[0-9]{1,9}\Z')
+      - albums_svc_image is regex(albums_svc_image_re)
+    quiet: true
+    fail_msg: albums_subuid — «начало:число», albums_svc_image — имя@sha256:<64 hex> (образ по дайджесту, а не по тегу)
+
+- name: Диапазон subuid — границы
+  ansible.builtin.assert:
+    that:
+      - albums_svc_sub_start | int >= albums_svc_sub_min_start
+      - albums_svc_sub_count | int >= albums_svc_sub_min_count
+      - albums_svc_sub_start | int + albums_svc_sub_count | int - 1 <= albums_svc_sub_max_end
+    quiet: true
+    fail_msg: >-
+      albums_subuid вне допустимого: начало не ниже {{ albums_svc_sub_min_start }}, число не меньше {{ albums_svc_sub_min_count }}
+      (процессу 65532 нужна карта не короче 65533), конец не выше {{ albums_svc_sub_max_end }} (design §9)
+
+- name: Секрет сервиса — формат
+  ansible.builtin.assert:
+    that: vault_albums_master is string and vault_albums_master is regex(albums_svc_master_re)
+    quiet: true
+    fail_msg: vault_albums_master — base64url не короче 32 байт (43 знака), albums-svc -gen-secret
+  no_log: true
+
+- name: Владельцы — слаг, студия, лимиты, токены (только sha256)
+  ansible.builtin.assert:
+    that:
+      - item.slug is defined and item.slug is string and item.slug is regex(albums_svc_slug_re)
+      - item.studio is defined and item.studio is string and item.studio | length >= 1 and item.studio | length <= 100
+      - item.quota_bytes is defined and item.quota_bytes is integer and item.quota_bytes > 0
+      - item.max_albums is defined and item.max_albums is integer and item.max_albums > 0
+      - item.tokens is defined and item.tokens is sequence and item.tokens is not string and item.tokens | length > 0
+      - item.tokens | map(attribute='sha256', default='') | select('regex', albums_svc_sha256_re) | list | length == item.tokens | length
+    quiet: true
+    fail_msg: "владелец в albums_owners задан неверно: слаг [a-z0-9-], студия 1…100 знаков, квота, число альбомов, токены с sha256 (hex, 64)"
+  loop: "{{ albums_owners }}"
+  loop_control:
+    label: "{{ item.slug | default('?') }}"
+  no_log: true
+
+- name: Владельцы — слаги и хэши токенов уникальны
+  ansible.builtin.assert:
+    that:
+      - albums_owners | map(attribute='slug') | unique | list | length == albums_owners | length
+      - albums_all_hashes | unique | list | length == albums_all_hashes | length
+      - albums_owners | length > 0
+    quiet: true
+    fail_msg: слаги владельцев и sha256 токенов должны быть уникальны, владелец — хотя бы один
+  vars:
+    albums_all_hashes: "{{ albums_owners | map(attribute='tokens') | flatten | map(attribute='sha256') | list }}"
+  no_log: true
+
+- name: Группа albums
+  ansible.builtin.getent:
+    database: group
+    key: albums
+    fail_key: false
+
+- name: Группа albums пуста (в ней никого, даже сервисных пользователей)
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group.albums is none or ansible_facts.getent_group.albums[2] == ''
+    quiet: true
+    fail_msg: в группе albums есть пользователи — группа граница для /etc/albums-svc и данных, она должна быть пуста (design §9)
+
+- name: Чтение subuid и subgid
+  ansible.builtin.include_tasks: subid.yml
+
+- name: Диапазон subuid не пересекается со строками других пользователей
+  ansible.builtin.assert:
+    that: albums_svc_subid_conflicts | from_json | length == 0
+    quiet: true
+    fail_msg: >-
+      диапазон {{ albums_subuid }} пересекается со строками /etc/subuid или /etc/subgid других пользователей:
+      {{ albums_svc_subid_conflicts | from_json | join(', ') }} (design §9: пересечение даёт им uid процесса сервиса)

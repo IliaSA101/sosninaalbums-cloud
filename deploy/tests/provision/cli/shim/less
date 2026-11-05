@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Поддельный less для provision_cli: diff — в файл, LESS и LESSSECURE — в другой (тест читает оба).
+cat >"$SHIM_OUT/less.txt"
+printf 'LESS=%s LESSSECURE=%s\n' "${LESS:-}" "${LESSSECURE:-}" >"$SHIM_OUT/less.env"

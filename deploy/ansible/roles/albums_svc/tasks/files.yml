@@ -1,0 +1,67 @@
+---
+# Файлы сервиса на хосте (design 002 §5, §9): каталоги, config.json, tmpfiles, Quadlet. Без rootless Podman и без
+# uid процесса сервиса — поэтому работает и на локальном стенде; ACL и каталог данных — в runtime.yml.
+- name: Каталог конфигурации сервиса (root:albums, 0750)
+  ansible.builtin.file:
+    path: "{{ albums_svc_conf_dir }}"
+    state: directory
+    owner: root
+    group: "{{ albums_svc_user }}"
+    mode: "0750"
+
+- name: Корень состояния сервиса (root, 0755)
+  ansible.builtin.file:
+    path: "{{ albums_svc_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# diff: false — в конфиге хэши токенов; замена файла сбрасывает ACL файла, поэтому ACL ставятся после каждой записи.
+- name: Конфигурация сервиса
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ albums_svc_conf_file }}"
+    owner: root
+    group: "{{ albums_svc_user }}"
+    mode: "0640"
+  diff: false
+  register: albums_svc_config_res
+
+# Каталог сокета — при каждой загрузке (/run — tmpfs): файл правил и немедленное создание при изменении.
+- name: Правила tmpfiles для каталога сокета (ACL для Caddy)
+  ansible.builtin.copy:
+    src: "{{ albums_svc_tmpfiles_src }}"
+    dest: "{{ albums_svc_tmpfiles_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: albums_svc_tmpfiles_res
+
+- name: Каталог сокета создан сейчас, а не только при следующей загрузке
+  ansible.builtin.command:
+    argv: [systemd-tmpfiles, --create, "{{ albums_svc_tmpfiles_dest }}"]
+  when: albums_svc_tmpfiles_res.changed  # noqa: no-handler
+  changed_when: true
+
+- name: Каталоги Quadlet пользователя albums
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ albums_svc_user }}"
+    group: "{{ albums_svc_user }}"
+    mode: "0700"
+  loop:
+    - "{{ albums_svc_home }}/.config"
+    - "{{ albums_svc_home }}/.config/containers"
+    - "{{ albums_svc_quadlet_dir }}"
+
+# Шаблон падает без дайджеста в albums_svc_image (проверка в самом шаблоне и в assert.yml).
+- name: Quadlet-юнит сервиса
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../quadlet/albums-svc.container.j2"
+    dest: "{{ albums_svc_quadlet_file }}"
+    owner: "{{ albums_svc_user }}"
+    group: "{{ albums_svc_user }}"
+    mode: "0644"
+  register: albums_svc_quadlet_res

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Поддельный ssh для provision_cli: отдаёт поток из FAKE_STREAM (как ключ забора с command=), код — FAKE_SSH_RC.
+printf 'SSH %s\n' "$*" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+[ "${FAKE_SSH_RC:-0}" = 0 ] || exit "$FAKE_SSH_RC"
+cat "${FAKE_STREAM:-/dev/null}"

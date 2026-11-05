@@ -1,0 +1,155 @@
+---
+# Задачи под тегом albums-runtime (design 002 §9, §12): им нужен rootless Podman или uid процесса сервиса
+# (начало subuid + 65531): linger, ACL и владелец каталога данных на этот uid, секрет Podman, образ, юнит.
+# Локальный стенд — rootless-цель — их пропускает (--skip-tags albums-runtime: в карте uid цели нет uid сервиса,
+# research §2); полный прогон — CI на rootful-цели.
+# Подтверждения «ничего не поменялось» нет в самом Podman, поэтому каждая задача сначала спрашивает состояние
+# (secret exists, image exists) и меняет только при отличии: повторный прогон — changed=0.
+- name: Linger пользователя albums (его юниты живут без входа и стартуют при загрузке)
+  ansible.builtin.command:
+    argv: [loginctl, enable-linger, "{{ albums_svc_user }}"]
+    creates: "/var/lib/systemd/linger/{{ albums_svc_user }}"
+
+- name: Шина пользователя albums поднялась
+  ansible.builtin.wait_for:
+    path: "/run/user/{{ albums_svc_host_uid }}/bus"
+    timeout: 60
+
+# ACL — после КАЖДОЙ записи config.json (замена файла ACL файла не переносит, design 001 §6).
+- name: ACL каталога конфигурации — процесс сервиса читает и обходит
+  ansible.posix.acl:
+    path: "{{ albums_svc_conf_dir }}"
+    entity: "{{ albums_svc_proc_uid }}"
+    etype: user
+    permissions: rx
+    state: present
+  register: albums_svc_acl_dir
+
+- name: ACL по умолчанию на каталоге — файл, созданный внутри, читается процессом
+  ansible.posix.acl:
+    path: "{{ albums_svc_conf_dir }}"
+    entity: "{{ albums_svc_proc_uid }}"
+    etype: user
+    permissions: r
+    default: true
+    state: present
+  register: albums_svc_acl_default
+
+- name: ACL файла конфигурации
+  ansible.posix.acl:
+    path: "{{ albums_svc_conf_file }}"
+    entity: "{{ albums_svc_proc_uid }}"
+    etype: user
+    permissions: r
+    state: present
+  register: albums_svc_acl_file
+
+# Каталог данных принадлежит uid процесса сервиса (то же, что podman unshare chown 65532:65532, без вложенного
+# Podman). Непустой каталог чужого владельца — ошибка: смена диапазона subuid требует chown данных по runbook.
+- name: Каталог данных
+  ansible.builtin.stat:
+    path: "{{ albums_svc_data_dir }}"
+  register: albums_svc_data_stat
+
+- name: Содержимое чужого каталога данных
+  ansible.builtin.find:
+    paths: "{{ albums_svc_data_dir }}"
+    file_type: any
+    hidden: true
+  register: albums_svc_data_find
+  when: albums_svc_data_stat.stat.exists and albums_svc_data_stat.stat.uid != albums_svc_proc_uid | int
+
+- name: Чужой непустой каталог данных — не трогаем
+  ansible.builtin.assert:
+    that: albums_svc_data_find.matched | default(0) == 0
+    quiet: true
+    fail_msg: >-
+      {{ albums_svc_data_dir }} непуст и принадлежит не uid процесса сервиса ({{ albums_svc_proc_uid }}): так бывает после смены
+      albums_subuid — chown данных по runbook, тихо роль его не меняет
+
+- name: Каталог данных — владелец uid процесса сервиса, 0700
+  ansible.builtin.file:
+    path: "{{ albums_svc_data_dir }}"
+    state: directory
+    owner: "{{ albums_svc_proc_uid }}"
+    group: "{{ albums_svc_proc_gid }}"
+    mode: "0700"
+
+# Всё ниже — от имени albums, с шиной его сеанса.
+- name: Podman и юнит сервиса от имени albums
+  become: true
+  become_user: "{{ albums_svc_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ albums_svc_host_uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ albums_svc_host_uid }}/bus"
+  block:
+    - name: Диапазон subuid изменился — podman system migrate
+      ansible.builtin.command:
+        argv: [podman, system, migrate]
+      when: "(albums_svc_subid_res | default({'results': []})).results | selectattr('changed') | list | length > 0"
+      changed_when: true
+
+    - name: Секрет albums_master есть?
+      ansible.builtin.command:
+        argv: [podman, secret, exists, "{{ albums_svc_secret_name }}"]
+      register: albums_svc_secret_exists
+      changed_when: false
+      failed_when: albums_svc_secret_exists.rc not in [0, 1]
+
+    # Смена секрета делает негодными все пароли и входы (001 §6): только явным -e albums_secret_rotate=true.
+    - name: Секрет удалён перед сменой
+      ansible.builtin.command:
+        argv: [podman, secret, rm, "{{ albums_svc_secret_name }}"]
+      when: albums_svc_secret_exists.rc == 0 and (albums_secret_rotate | default(false) | bool)
+      changed_when: true
+
+    # Значение — stdin, а не argv и не файл: в ps, журнале и временных файлах его нет.
+    - name: Секрет albums_master из vault
+      ansible.builtin.command:
+        argv: [podman, secret, create, "{{ albums_svc_secret_name }}", "-"]
+        stdin: "{{ vault_albums_master }}"
+        stdin_add_newline: false
+      when: albums_svc_secret_exists.rc == 1 or (albums_secret_rotate | default(false) | bool)
+      changed_when: true
+      no_log: true
+      register: albums_svc_secret_res
+
+    - name: Образ сервиса есть?
+      ansible.builtin.command:
+        argv: [podman, image, exists, "{{ albums_svc_image }}"]
+      register: albums_svc_image_exists
+      changed_when: false
+      failed_when: albums_svc_image_exists.rc not in [0, 1]
+
+    - name: Образ сервиса по дайджесту
+      ansible.builtin.command:
+        argv: [podman, pull, "{{ albums_svc_image }}"]
+      when: albums_svc_image_exists.rc == 1
+      changed_when: true
+      register: albums_svc_pull_res
+
+    - name: Quadlet перечитан (systemctl --user daemon-reload)
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+        scope: user
+
+    # restarted при изменении Quadlet, конфига, ACL, образа или секрета (запущенный процесс видит старое), иначе
+    # started: повторный прогон остаётся без изменений.
+    - name: Сервис запущен (перезапущен, если что-то изменилось)
+      ansible.builtin.systemd_service:
+        name: albums-svc.service
+        scope: user
+        state: >-
+          {{ 'restarted' if [albums_svc_config_res | default({}), albums_svc_quadlet_res | default({}), albums_svc_acl_dir | default({}),
+          albums_svc_acl_default | default({}), albums_svc_acl_file | default({}), albums_svc_secret_res | default({}),
+          albums_svc_pull_res | default({})] | selectattr('changed', 'defined')
+          | selectattr('changed') | list | length > 0 else 'started' }}
+
+    - name: Готовность — healthcheck контейнера
+      ansible.builtin.command:
+        argv: [podman, healthcheck, run, albums-svc]
+      register: albums_svc_health
+      until: albums_svc_health.rc == 0
+      retries: 20
+      delay: 3
+      changed_when: false

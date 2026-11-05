@@ -1,0 +1,32 @@
+---
+# Значения стенда (не секреты); converge.sh копирует файл в inventory Ansible стенда ($work/ansible) рядом с
+# hosts.yml и зашифрованным vault.yml (пароль администратора и его хэш — на каждый запуск). Настоящий inventory
+# владельца (приватный) повторяет эти имена переменных.
+#
+# Имена пользователей, домен, ssh-аргументы (sa_ssh_args) и открытый ключ входа (sa_controller_pubkey) сюда не
+# входят: их передаёт -e общий с provision.sh код deploy/ops/ctl-run.sh. Соединение (ansible_ssh_common_args,
+# ansible_become_password) задают плеи сами, из sa_ssh_args и vault_admin_password.
+
+# Ключ администратора — ключ стенда: ctl-run.sh монтирует его открытую часть как /run/sa/id_server.pub, а плей
+# обязан найти его среди admin_ssh_keys (иначе роль bootstrap откажется закрывать вход образа).
+admin_ssh_keys:
+  - "{{ lookup('ansible.builtin.file', '/run/sa/id_server.pub') | trim }}"
+
+# Сервис и копия (роли podman, caddy, albums_svc, backup_access). Диапазон subuid — как в примере inventory;
+# локально, в rootless-цели, он нужен только для файлов и проверок (задачи albums-runtime пропускаются).
+albums_subuid: "200000:65536"
+albums_svc_image: "registry.example.org/albums-svc@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+albums_owners:
+  - slug: p1
+    studio: Студия стенда
+    quota_bytes: 10737418240
+    max_albums: 500
+    tokens:
+      - name: стенд
+        sha256: "0000000000000000000000000000000000000000000000000000000000000001"
+
+# Ключи стенда: настоящих секретов нет. Получатель age — строка нужного формата (bech32 без проверки суммы:
+# поток копии на ней не шифруется — verify_backup_stream в CI берёт настоящий ключ).
+backup_ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleStandBackupKeyNotARealKeyxxxxxxxxxx sa-backup"
+backup_age_recipient: "age1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce"
+backup_runtime_max: "6h"
