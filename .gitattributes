@@ -1,0 +1,6 @@
+# Только LF: скрипты и git-хуки с CRLF не запускаются, а смешанные концы строк шумят в диффе.
+* text=auto eol=lf
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.png binary

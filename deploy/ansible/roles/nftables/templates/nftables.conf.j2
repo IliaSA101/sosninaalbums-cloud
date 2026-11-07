@@ -1,0 +1,27 @@
+#!/usr/sbin/nft -f
+# Управляется Ansible (роль nftables, design 002 §6): правки руками будут перезаписаны.
+# Своя таблица, без `flush ruleset`: чужие таблицы не трогаем. Две первые строки делают загрузку
+# повторяемой одной транзакцией (создать, если нет, и тут же удалить, затем создать заново).
+# Применять только `systemctl reload nftables`: stop и restart юнита в Debian выполняют `nft flush ruleset`
+# и оставили бы хост без фильтра.
+table inet sa_filter
+delete table inet sa_filter
+table inet sa_filter {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		ct state invalid drop
+		ct state established,related accept
+		iif "lo" accept
+		icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem,
+			nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+		icmp type echo-request limit rate 5/second accept
+		icmpv6 type echo-request limit rate 5/second accept
+		# DHCPv6, если провайдер выдаст IPv6
+		ip6 saddr fe80::/10 udp dport 546 accept
+		tcp dport { 22, 80, 443 } accept
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}

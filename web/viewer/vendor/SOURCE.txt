@@ -1,0 +1,15 @@
+StPageFlip (npm: page-flip) 2.0.7, лицензия MIT — LICENSE-page-flip.txt (Copyright (c) 2020 Nodlik).
+Тот же файл и та же версия, что были в программе Sosnina Albums 0.30–0.31 (internal/export/flipbook/vendor, 0.30-139);
+в 0.32 программа его удалила (146, Т2, коммит 5174f108), так что копия здесь — единственная живая.
+
+page-flip-2.0.7.browser.js — dist/js/page-flip.browser.js из npm-пакета page-flip@2.0.7, без правок:
+  44058 байт, sha256 bbaca0bbef57a22bb66a3fc69d67baf9a17fb9a9c89ec9ed35e2b91abe4bd1e7
+LICENSE-page-flip.txt:
+  sha256 88d7b609a3be5efa2abe8648ddc35d5489579db5e06299545760df45c2c32d66
+page-flip-2.0.7.css — не отдельный файл пакета, а строка стилей, которую библиотека при загрузке сама вставляет
+  в <style>. CSP сервиса (style-src без unsafe-inline) такой <style> блокирует, поэтому строка вынесена в файл
+  дословно (JSON.parse литерала из browser.js; имена классов библиотеки, включая опечатку sft__wrapper, не тронуты),
+  а вставку на время загрузки гасит lib.js.
+  sha256 ebca2fc2e54480fe0a3faf34dc2361760e92d2309f132763338b0cfd0767739a
+
+Обновление — только заменой версии целиком (новые файлы с новой версией в имени, новые суммы здесь), не патчами.

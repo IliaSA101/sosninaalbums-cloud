@@ -1,0 +1,60 @@
+---
+# cloud-init не меняет пароли, ключи и пользователей (design 002 §10, решение 002-13). Роль не ставит
+# cloud-init и не трогает его настройку сети; нет cloud-init (модуля cloudinit) — образ не тот, это ошибка.
+- name: Прежний файл 99-sa.cfg удалён
+  ansible.builtin.file:
+    path: "{{ cloud_init_old_sa_cfg }}"
+    state: absent
+
+# Итоговые списки образа БЕЗ нашего файла: из них строится наш; уже записанный файл исходные списки не прячет.
+- name: Итоговые списки модулей образа (без zz-sa.cfg)
+  ansible.builtin.command:
+    argv: [python3, -I, "-", base]
+    stdin: "{{ cloud_init_script }}"
+    # Из корня и в изолированном режиме: иначе python возьмёт json.py из дома администратора (под become).
+    chdir: /
+  register: cloud_init_base_raw
+  changed_when: false
+
+- name: Списки модулей образа на месте
+  ansible.builtin.assert:
+    that:
+      - cloud_init_base[item] is sequence
+      - cloud_init_base[item] is not string
+      - cloud_init_base[item] | length > 0
+    quiet: true
+    fail_msg: "в итоговой конфигурации cloud-init нет списка {{ item }}: образ не похож на облачный Debian"
+  loop: "{{ cloud_init_stages }}"
+  vars:
+    cloud_init_base: "{{ (cloud_init_base_raw.stdout | from_json).lists }}"
+
+- name: Списки модулей без пользователей, паролей и ключей
+  ansible.builtin.template:
+    src: zz-sa.cfg.j2
+    dest: "{{ cloud_init_sa_cfg }}"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    # kept — списки образа без запрещённых модулей (имена сверяет скрипт по каноническому виду cloud-init).
+    cloud_init_kept: "{{ (cloud_init_base_raw.stdout | from_json).kept }}"
+
+- name: Полное выключение cloud-init (если включено переменной)
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ cloud_init_disabled_file }}"
+    force: false
+    owner: root
+    group: root
+    mode: "0644"
+  when: cloud_init_disable | bool
+
+- name: Полное выключение cloud-init снято (если не включено переменной)
+  ansible.builtin.file:
+    path: "{{ cloud_init_disabled_file }}"
+    state: absent
+  when: not (cloud_init_disable | bool)
+
+# Сразу после записи: файл, читаемый позже нашего (zzz.cfg, чужой vendor), вернул бы запрещённые модули.
+- name: Итоговая конфигурация после записи
+  ansible.builtin.include_tasks: verify_effective.yml

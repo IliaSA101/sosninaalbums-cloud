@@ -1,0 +1,21 @@
+---
+# Порядок (design 002 §7): проверка данных → пакеты → администратор и ключи → пробный вход и sudo → 00-sa.conf →
+# повторный пробный вход → root закрывается → пользователь образа. Корень закрывается только после входа и
+# sudo администратора: ошибка раньше оставляет окно открытым, но не запирает хозяина снаружи.
+- name: Проверка входных данных
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Пакеты и часы
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Администратор, ключи, пароль и пробный вход
+  ansible.builtin.import_tasks: admin.yml
+
+- name: Настройка sshd с пробным входом и откатом
+  ansible.builtin.import_tasks: sshd.yml
+
+- name: Закрытие входа root
+  ansible.builtin.import_tasks: root_closed.yml
+
+- name: Пользователь образа
+  ansible.builtin.import_tasks: image_user.yml

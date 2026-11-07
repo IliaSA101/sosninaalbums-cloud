@@ -1,0 +1,16 @@
+# /etc/systemd/system/sa-backup.socket (design 002 §11): сокет забора копии. Подключается только пользователь
+# группы бэкапа (ключ забора с restrict,command= запускает socat на этот сокет). Accept=yes: каждое подключение —
+# свой экземпляр sa-backup@.service; MaxConnections=1 — второй клиент ждёт или получает отказ (DoS при краже ключа
+# забора принят, design §14). Группа — из inventory (backup_user), шаблон Jinja для роли backup_access.
+[Unit]
+Description=Сокет забора копии albums-svc
+
+[Socket]
+ListenStream=/run/sa-backup/stream.sock
+SocketGroup={{ backup_user }}
+SocketMode=0660
+Accept=yes
+MaxConnections=1
+
+[Install]
+WantedBy=sockets.target

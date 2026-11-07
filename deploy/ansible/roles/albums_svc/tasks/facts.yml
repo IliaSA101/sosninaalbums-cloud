@@ -1,0 +1,7 @@
+---
+# Факты для задач albums-runtime (runtime.yml): uid пользователя albums на хосте. Включается с тегом albums-runtime,
+# поэтому `--tags albums-runtime` работает и отдельно (после полного прогона, когда пользователь уже создан).
+- name: Uid пользователя albums на хосте
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ albums_svc_user }}"

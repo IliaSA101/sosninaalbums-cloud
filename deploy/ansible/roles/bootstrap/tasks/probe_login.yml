@@ -1,0 +1,19 @@
+---
+# Новый вход администратора с контроллера: ключ (аргументы ssh — те же, что у Ansible, sa_ssh_args) и
+# `sudo -S -v` с паролем из stdin. Без оболочки и echo: пароль не попадает ни в argv, ни в историю.
+# Без мультиплексирования: проверяется именно новое соединение, а не живая сессия прогона.
+- name: Пробный вход администратора и sudo -S -v
+  delegate_to: localhost
+  become: false
+  vars:
+    # Контроллер запускается с корневой ФС только на чтение, дом root недоступен для записи: временный
+    # каталог модуля — в tmpfs.
+    ansible_remote_tmp: /tmp/.ansible-probe
+  ansible.builtin.command:
+    argv: >-
+      {{ ['ssh'] + sa_ssh_args + ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+      '-p', bootstrap_ssh_port | string, admin_user ~ '@' ~ bootstrap_ssh_target, 'sudo', '-S', '-v'] }}
+    stdin: "{{ vault_admin_password }}"
+  register: bootstrap_probe
+  changed_when: false
+  no_log: true
