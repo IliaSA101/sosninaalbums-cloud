@@ -3,7 +3,8 @@ name: Release
 # Выпуск образа albums-svc (design 004): только push метки vX.Y.Z (лёгкая, на коммите из main). Подпись и права
 # записи у отдельных заданий; permissions: {} наверху — у остальных нет ничего, что не названо явно. Файл читают
 # целиком в review.sh, а проверяет workflow_guard.py (в CI и в image-verify на ops-ВМ), поэтому он мал и однообразен:
-# run: только вызовы deploy/release/*, выражения только из перечня, без if:, кроме выхода из реестра.
+# run: только вызовы deploy/release/*, выражения только из перечня, без if:, кроме выхода из реестра и
+# повтора подписи в release-attest (pause + вторая попытка, 004-46).
 # Запасной путь, если GITHUB_TOKEN не создаст пакет (design §9): environment: release у release-publish и
 # secrets.RELEASE_PACKAGES_TOKEN вместо GITHUB_TOKEN в env: TOKEN — отдельным выпуском, после «да» владельца.
 on:
@@ -73,7 +74,7 @@ jobs:
           SA_REPO: ghcr.io/iliasa101/albums-svc
         run: bash src/deploy/release/publish.sh "$SA_ARCHIVE" "$SA_DIGEST" "$SA_REPO" "$GITHUB_REF_NAME"
 
-      # Единственный if: выпуска. Выход - до загрузки публичного артефакта; провал публикации его не отменяет.
+      # Единственный if: в release-publish. Выход - до загрузки публичного артефакта; провал публикации его не отменяет.
       - name: Выход из реестра
         if: always()
         run: bash src/deploy/release/registry.sh logout
@@ -119,6 +120,25 @@ jobs:
                   break
               page, pos = dec.raw_decode(text, pos)
               jobs.extend(page.get("jobs") or [])
+          def hosted(j):
+              return j.get("runner_group_id") == GROUP_ID and j.get("runner_group_name") == GROUP_NAME
+          def attempt(j):
+              a = j.get("run_attempt")
+              return a if type(a) is int else None
+          def is_copy(j):
+              # Rerun copies a finished job from an earlier attempt: same name and runner_id, group id null.
+              # Valid only if that earlier attempt has the original of the same name and runner_id on the right group,
+              # and the original succeeded (GitHub copies only successful jobs).
+              a = attempt(j)
+              if a is None or j.get("runner_id") is None or j.get("runner_group_id") is not None:
+                  return False
+              if j.get("runner_group_name") != GROUP_NAME:
+                  return False
+              for o in jobs:
+                  b = attempt(o)
+                  if b is not None and b < a and o.get("name") == j.get("name") and o.get("runner_id") == j.get("runner_id") and hosted(o) and o.get("conclusion") == "success":
+                      return True
+              return False
           bad, seen = [], set()
           if not jobs:
               bad.append("empty answer")
@@ -130,7 +150,7 @@ jobs:
                   if j.get("conclusion") not in ("skipped", "cancelled"):
                       bad.append(name + ": no runner, conclusion " + str(j.get("conclusion")))
                   continue
-              if j.get("runner_group_id") != GROUP_ID or j.get("runner_group_name") != GROUP_NAME:
+              if not hosted(j) and not is_copy(j):
                   bad.append(name + ": runner group " + str(j.get("runner_group_id")) + " / " + str(j.get("runner_group_name")))
               if j.get("conclusion") == "success":
                   seen.add(name)
@@ -140,8 +160,26 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
-      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        id: attest
+      # Подпись с одним повтором (design 004 §10, 004-46): Rekor иногда отвечает 500 на единичный запрос. Первая
+      # попытка - continue-on-error (outcome остаётся виден), вторая идёт только после её провала, тем же действием
+      # с тем же sha, и без continue-on-error: провал второй проваливает задание. Выход attest2 важнее attest1.
+      - name: Подпись образа, попытка 1
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: attest1
+        continue-on-error: true
+        with:
+          subject-name: ghcr.io/iliasa101/albums-svc
+          subject-digest: ${{ needs.checks.outputs.digest }}
+          push-to-registry: false
+
+      - name: Пауза перед второй попыткой подписи
+        if: steps.attest1.outcome == 'failure'
+        run: sleep 90
+
+      - name: Подпись образа, попытка 2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        id: attest2
+        if: steps.attest1.outcome == 'failure'
         with:
           subject-name: ghcr.io/iliasa101/albums-svc
           subject-digest: ${{ needs.checks.outputs.digest }}
@@ -150,5 +188,5 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-attestation
-          path: ${{ steps.attest.outputs.bundle-path }}
+          path: ${{ steps.attest2.outputs.bundle-path || steps.attest1.outputs.bundle-path }}
           if-no-files-found: error

@@ -20,14 +20,14 @@ ARTIFACT_MIN = (4, 1, 3)  # CVE-2024-42471: выход за каталог пр�
 TAG_PATTERN = "v[0-9]+.[0-9]+.[0-9]+"
 # sha256 текста run шага сверки раннеров (design §6.1): правка проверки видна дважды - в workflow и здесь.
 # Менять вместе с шагом (например, после уточнения группы раннеров на ci/*).
-RUNNER_STEP_SHA = "6ab99e5f2e7ccf657b204e9a0cff6a174a562fb566f0770384ec9854ebdbb69d"
+RUNNER_STEP_SHA = "c0a974e01404d67dd8dc89ce227f6ad81693e57b3947ac9aafb816ac9036e823"
 # env некритичных шагов (check, stand-full, probe): только это. У шагов uses: env нет вовсе.
 ENV_FREE = ("GITLEAKS_VERSION", "GITLEAKS_SHA256", "SA_IMAGE_ARCHIVE", "SA_IMAGE_DIGEST")
 
 WF_KEYS = {"name", "on", "permissions", "concurrency", "jobs"}
 ON_KEYS = {"push", "workflow_dispatch", "workflow_call"}
 JOB_KEYS = {"name", "needs", "permissions", "timeout-minutes", "runs-on", "environment", "outputs", "steps", "uses", "with"}
-STEP_KEYS = {"name", "id", "uses", "with", "env", "run", "if"}
+STEP_KEYS = {"name", "id", "uses", "with", "env", "run", "if", "continue-on-error"}
 PERM_KEYS = {"contents", "packages", "id-token", "attestations", "actions"}
 WITH_KEYS = {
     "checkout": {"persist-credentials", "fetch-depth", "sparse-checkout", "path"},
@@ -51,6 +51,11 @@ USES_STEP = re.compile(r"^actions/([a-z][a-z-]*)@([0-9a-f]{40})$")
 CO, UP, DL, AT = "actions/checkout", "actions/upload-artifact", "actions/download-artifact", "actions/attest"
 TMP = "${{ runner.temp }}"
 DIGEST = "${{ needs.checks.outputs.digest }}"
+# Повтор подписи (004-46): вторая попытка и пауза идут только после провала первой; первая - единственный шаг
+# с continue-on-error во всём выпуске, и провал второй проваливает задание.
+RETRY_IF = "steps.attest1.outcome == 'failure'"
+ATTEST_WITH = {"subject-name": REPO_IMAGE, "subject-digest": DIGEST, "push-to-registry": "false"}
+ATTEST_FIRST = ("release.yml", "release-attest", "attest1")
 
 
 def runner_step(required):
@@ -82,8 +87,17 @@ SPECS = {
     ],
     ("release.yml", "release-attest"): [
         runner_step("checks / build-image;checks / stand-full;release-publish"),
-        {"uses": AT, "id": "attest", "with": {"subject-name": REPO_IMAGE, "subject-digest": DIGEST, "push-to-registry": "false"}},
-        {"uses": UP, "with": {"name": "release-attestation", "path": "${{ steps.attest.outputs.bundle-path }}", "if-no-files-found": "error"}},
+        {"uses": AT, "id": "attest1", "continue-on-error": "true", "with": ATTEST_WITH},
+        {"if": RETRY_IF, "run": "sleep 90"},
+        {"uses": AT, "id": "attest2", "if": RETRY_IF, "with": ATTEST_WITH},
+        {
+            "uses": UP,
+            "with": {
+                "name": "release-attestation",
+                "path": "${{ steps.attest2.outputs.bundle-path || steps.attest1.outputs.bundle-path }}",
+                "if-no-files-found": "error",
+            },
+        },
     ],
     ("checks.yml", "build-image"): [
         {"uses": CO, "with": {"persist-credentials": "false"}},
@@ -231,13 +245,22 @@ def check_step(step, where, lock, errs, fname, jid):
             p = re.sub(r"\$\{\{ [^{}]* \}\}", "X", str(w.get("path", "")))
             if not p or any(c in p for c in "*?[\n "):
                 errs.append(f"{where}: upload-artifact - path ровно один файл, без шаблонов")
+    if "continue-on-error" in step and (fname, jid, step.get("id")) != ATTEST_FIRST:
+        errs.append(f"{where}: continue-on-error вне перечня (допустим только на первой попытке подписи, 004-46)")
     if (fname, jid) not in SPECS:
         # Некритичные шаги: env из короткого перечня, без if (в критичных решает SPECS).
         for k in env:
             if k not in ENV_FREE:
                 errs.append(f"{where}: переменная окружения «{k}» вне перечня {list(ENV_FREE)}")
         if "if" in step:
-            errs.append(f"{where}: if: допустим один раз - выход из реестра в release-publish")
+            errs.append(f"{where}: if: только в закреплённых шагах (выход из реестра, повтор подписи)")
+
+
+def check_attest_retry(steps, where, errs):
+    """Обе попытки подписи - одно и то же действие с одним и тем же sha (shape отбрасывает sha, поэтому отдельно)."""
+    uses = [str(st.get("uses")) for st in steps if isinstance(st, dict) and str(st.get("uses", "")).startswith(AT + "@")]
+    if len(uses) != 2 or uses[0] != uses[1]:
+        errs.append(f"{where}: две попытки подписи должны быть ровно одним и тем же actions/attest@<sha>")
 
 
 def check_job(jid, job, fname, lock, errs):
@@ -269,6 +292,8 @@ def check_job(jid, job, fname, lock, errs):
     steps = list_of(job.get("steps"), f"{where}.steps", errs)
     for i, st in enumerate(steps):
         check_step(st, f"{where}.steps[{i}]", lock, errs, fname, jid)
+    if (fname, jid) == ("release.yml", "release-attest"):
+        check_attest_retry(steps, where, errs)
     spec = SPECS.get((fname, jid))
     if spec is not None:
         if len(steps) != len(spec):

@@ -1,0 +1,161 @@
+{
+ "total_count": 12,
+ "jobs": [
+  {
+   "name": "release-gate",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "runner_id": 1000004379,
+   "runner_name": "GitHub Actions 1000004379",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / check",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "runner_id": 1000004380,
+   "runner_name": "GitHub Actions 1000004380",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / build-image",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "runner_id": 1000004381,
+   "runner_name": "GitHub Actions 1000004381",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / stand-full",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "runner_id": 1000004382,
+   "runner_name": "GitHub Actions 1000004382",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "release-publish",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 1,
+   "runner_id": 1000004383,
+   "runner_name": "GitHub Actions 1000004383",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "release-attest",
+   "status": "completed",
+   "conclusion": "failure",
+   "run_attempt": 1,
+   "runner_id": 1000004384,
+   "runner_name": "GitHub Actions 1000004384",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "release-gate",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 2,
+   "runner_id": 1000004379,
+   "runner_name": "GitHub Actions 1000004379",
+   "runner_group_id": null,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "release-attest",
+   "status": "completed",
+   "conclusion": "failure",
+   "run_attempt": 2,
+   "runner_id": 1000004385,
+   "runner_name": "GitHub Actions 1000004385",
+   "runner_group_id": 0,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / build-image",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 2,
+   "runner_id": 1000004381,
+   "runner_name": "GitHub Actions 1000004381",
+   "runner_group_id": null,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "release-publish",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 2,
+   "runner_id": 1000004383,
+   "runner_name": "GitHub Actions 1000004383",
+   "runner_group_id": null,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / stand-full",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 2,
+   "runner_id": 1000004382,
+   "runner_name": "GitHub Actions 1000004382",
+   "runner_group_id": null,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  },
+  {
+   "name": "checks / check",
+   "status": "completed",
+   "conclusion": "success",
+   "run_attempt": 2,
+   "runner_id": 1000004380,
+   "runner_name": "GitHub Actions 1000004380",
+   "runner_group_id": null,
+   "runner_group_name": "GitHub Actions",
+   "labels": [
+    "ubuntu-24.04"
+   ]
+  }
+ ]
+}

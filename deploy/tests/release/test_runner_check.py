@@ -22,6 +22,20 @@ def hosted(name, **kw):
     return j
 
 
+def rerun_answer():
+    """Настоящий ответ API после `gh run rerun --failed` (прогон выпуска v0.1.0): задания попытки 1 и их копии в попытке 2."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "rerun-jobs.json"), encoding="utf-8") as f:
+        jobs = json.load(f)["jobs"]
+    for j in jobs:
+        if j["name"] == "release-attest" and j["run_attempt"] == 2:  # на момент шага это задание ещё идёт
+            j.update(status="in_progress", conclusion=None)
+    return jobs
+
+
+def find(jobs, name, attempt):
+    return [j for j in jobs if j["name"] == name and j["run_attempt"] == attempt][0]
+
+
 def good(extra=()):
     names = ["release-gate", "checks / check", "checks / build-image", "checks / stand-full", "release-publish"]
     me = hosted("release-attest", status="in_progress", conclusion=None)
@@ -97,6 +111,69 @@ class RunnerCheck(rtlib.Case):
         rc, out = self.run_step(jobs, fname="ci.yml", job="runner-check")
         self.assertEqual(rc, 0, out)
         self.stops("missing job", jobs=jobs[:2] + jobs[3:], fname="ci.yml", job="runner-check")
+
+    def test_rerun_copies_from_real_answer_pass(self):
+        # копии при перезапуске: тот же name и runner_id, runner_group_id = null, оригинал в попытке 1 на верной группе
+        jobs = rerun_answer()
+        copies = [j for j in jobs if j["runner_group_id"] is None]
+        self.assertEqual(len(copies), 5)
+        rc, out = self.run_step(jobs)
+        self.assertEqual(rc, 0, out)
+
+    def test_rerun_copy_with_swapped_runner_id_stops(self):
+        jobs = rerun_answer()
+        find(jobs, "checks / build-image", 2)["runner_id"] = 1000009999
+        self.stops("checks / build-image: runner group None", jobs=jobs)
+
+    def test_rerun_copy_with_runner_id_of_another_job_stops(self):
+        # runner_id копии build-image совпал с runner_id оригинала ДРУГОГО задания (check): имя обязано совпадать тоже
+        jobs = rerun_answer()
+        find(jobs, "checks / build-image", 2)["runner_id"] = find(jobs, "checks / check", 1)["runner_id"]
+        self.stops("checks / build-image: runner group None", jobs=jobs)
+
+    def test_rerun_original_not_success_stops(self):
+        # GitHub копирует только успешные задания: оригинал с failure копией не оправдывается
+        jobs = rerun_answer()
+        find(jobs, "checks / build-image", 1)["conclusion"] = "failure"
+        self.stops("checks / build-image: runner group None", jobs=jobs)
+
+    def test_rerun_copy_without_original_stops(self):
+        jobs = [j for j in rerun_answer() if not (j["name"] == "release-publish" and j["run_attempt"] == 1)]
+        self.stops("release-publish: runner group None", jobs=jobs)
+
+    def test_rerun_original_with_foreign_group_stops(self):
+        jobs = rerun_answer()
+        find(jobs, "checks / build-image", 1).update(runner_group_id=7, runner_group_name="Default")
+        rc, out = self.run_step(jobs)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("checks / build-image: runner group 7", out)
+        self.assertIn("checks / build-image: runner group None", out)  # копия без верного оригинала тоже отказ
+
+    def test_rerun_copy_needs_an_earlier_attempt(self):
+        # оригинал в той же попытке или в более поздней копией не оправдывает
+        same = rerun_answer()
+        find(same, "release-gate", 1)["run_attempt"] = 2
+        self.stops("release-gate: runner group None", jobs=same)
+        later = rerun_answer()
+        find(later, "release-gate", 1)["run_attempt"] = 3
+        self.stops("release-gate: runner group None", jobs=later)
+
+    def test_rerun_copy_needs_attempt_number_and_group_name(self):
+        no_attempt = rerun_answer()
+        del find(no_attempt, "checks / check", 2)["run_attempt"]
+        self.stops("checks / check: runner group None", jobs=no_attempt)
+        wrong_name = rerun_answer()
+        find(wrong_name, "checks / check", 2)["runner_group_name"] = "Self"
+        self.stops("checks / check: runner group None / Self", jobs=wrong_name)
+        flag = rerun_answer()
+        find(flag, "checks / check", 2)["run_attempt"] = True  # bool - не номер попытки
+        self.stops("checks / check: runner group None", jobs=flag)
+
+    def test_null_group_without_attempts_stops(self):
+        # без run_attempt (не перезапуск) null-группа - отказ, как и раньше
+        jobs = good()
+        jobs[2] = hosted("checks / build-image", runner_group_id=None)
+        self.stops("checks / build-image: runner group None", jobs=jobs)
 
     def test_same_text_in_release_and_ci(self):
         self.assertEqual(step("release.yml", "release-attest")["run"], step("ci.yml", "runner-check")["run"])

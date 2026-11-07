@@ -48,13 +48,14 @@ checks: check ─────────────┤
    Символы — только из белого списка `ctl_pattern` (`guard.sh`, `review.sh`): печатный ASCII, кириллица, `§ © « » ° — … № → ≠ ≤ ≥`; табуляция,
    NBSP, `–`, `✓`, типографские кавычки, невидимые и bidi-символы — нигде, даже в комментариях (004-31); пути дерева — только ASCII.
 2. Ключи — из перечня на каждом уровне (workflow, задание, шаг, `with` — по действию); незнакомый (`shell`,
-   `defaults`, `strategy`, `container`, `services`, `continue-on-error` …) — отказ.
+   `defaults`, `strategy`, `container`, `services`, `continue-on-error` …) — отказ. Единственное исключение —
+   `continue-on-error: true` на первой попытке подписи в `release-attest` (§6, 004-46).
 3. Слова `uses`, `runs-on`, `container`, `services`, `environment`, `secrets`, `vars`, `continue-on-error`,
    `shell` вне комментария встречаются только в канонической строке `^\s*(- )?<ключ>: <значение>$`; в тексте
    `run:` их нет вовсе.
 4. Выражения `${{ … }}` — ровно из перечня, побайтово: `github.ref`, `github.token`, `runner.temp`, `inputs.version`,
    `needs.checks.outputs.digest`, `needs.build-image.outputs.digest` (стенд), `jobs.build-image.outputs.digest`,
-   `steps.build.outputs.digest`, `steps.attest.outputs.bundle-path`,
+   `steps.build.outputs.digest`, `steps.attest2.outputs.bundle-path || steps.attest1.outputs.bundle-path` (одна строка, §6),
    `secrets.GITHUB_TOKEN`, `secrets.RELEASE_PACKAGES_TOKEN`; любое другое (`vars['X']`, `toJSON(secrets)`,
    `format(…)`) — отказ. Внутри `run:` — ни одного.
 
@@ -66,9 +67,11 @@ checks: check ─────────────┤
 3. `release.yml`: `permissions: {}` наверху; `on` — только `push.tags` с шаблоном; права заданий ровно:
    `release-gate`, `checks` — `contents: read`; `release-publish` — `contents: read, packages: write`;
    `release-attest` — `contents: read, actions: read, id-token: write, attestations: write`.
-4. **«Стоп» не становится зелёным** (Н3-3): `continue-on-error` нет нигде; у заданий `checks`, `build-image`,
-   `stand-full`, `release-*` и у их шагов нет `if:`, кроме одного шага выхода из реестра (`if: always()`) в
-   `release-publish`; `needs` — как в §1; `timeout-minutes` — да, `fail-fast`/`strategy` — нет.
+4. **«Стоп» не становится зелёным** (Н3-3): `continue-on-error` нет нигде, кроме первой попытки подписи (`attest1`
+   в `release-attest`); у заданий `checks`, `build-image`, `stand-full`, `release-*` и у их шагов нет `if:`, кроме
+   шага выхода из реестра (`if: always()`) в `release-publish` и повтора подписи в `release-attest` (пауза и `attest2`
+   с `if: steps.attest1.outcome == 'failure'`; `attest2` без `continue-on-error`, провал обеих попыток проваливает
+   задание; §6 п. 2, 004-46); `needs` — как в §1; `timeout-minutes` — да, `fail-fast`/`strategy` — нет.
 5. **Критичные задания закреплены целиком** (004-26 и его дополнение — уровень задания: ключи, `timeout-minutes`, без `name` и `environment`; `${{` в любом `name` — отказ): `release-gate`, `release-publish`, `release-attest`, `build-image`
    (`checks.yml`) и `runner-check` (`ci.yml`) — список шагов, их ключи, `env` и `with` равны эталону `SPECS` в `wfrules.py`
    (свободно только `name`). Следствие: у шагов `uses:` переменных окружения нет; `SHELLOPTS`, `PS4`, `BASH_ENV`, `NODE_OPTIONS`,
@@ -146,10 +149,23 @@ checks: check ─────────────┤
    его удостоверяет сертификат (`runnerEnvironment`), поэтому сверка живёт в нём. Тот же шаг — задание
    `runner-check` в `ci.yml` (`actions: read`) на `ci/*`, где обязательны `checks / build-image` и
    `checks / stand-full`.
+   **Копии при перезапуске (004-46).** `gh run rerun --failed` копирует в новую попытку завершённые задания: те же `name`,
+   `runner_id`, `runner_name`, но `runner_group_id = null` (`runner_group_name` при этом верное; так вышло на v0.1.0).
+   Задание с `null` группой допустимо, только если в **более ранней** попытке (`run_attempt` — целое, строго меньше) есть
+   задание с тем же `name` и тем же `runner_id`, у которого группа верная (0 / «GitHub Actions») и `conclusion: success`
+   (GitHub копирует только успешные): иначе копию не отличить
+   от задания на чужом раннере, который группы не показал. Копия без оригинала, с подменённым `runner_id`, с оригиналом на
+   чужой группе, без `run_attempt` и без имени группы — отказ, как раньше. Оригинал при этом проверяется сам.
 2. `actions/attest@<SHA> # v4.x` (`subject-name: ghcr.io/iliasa101/albums-svc`, `subject-digest` из `checks`,
    `push-to-registry: false`); до метки сверить `action.yml` закреплённого SHA: без `predicate-*` — SLSA provenance
-   v1, `bundle-path` — `.jsonl`, строка на субъект.
-3. `upload-artifact` `release-attestation` (файл `bundle-path`).
+   v1, `bundle-path` — `.jsonl`, строка на субъект. **Один повтор (004-46):** Rekor отвечает 500 на единичный запрос
+   (v0.1.0). Шаги по порядку: `attest1` (`continue-on-error: true`), пауза `sleep 90` и `attest2` — оба с
+   `if: steps.attest1.outcome == 'failure'`, `attest2` без `continue-on-error`: провал обеих попыток проваливает задание,
+   успех первой пропускает вторую. Обе попытки — один и тот же `actions/attest@<SHA>` (сверяет guard: `shape` sha не видит).
+   Если первая попытка успела создать запись в Rekor и упала позже, в журнале будет вторая запись на тот же `D`: лишняя,
+   но безвредная (улику для `image-verify` даёт бандл удавшейся попытки).
+3. `upload-artifact` `release-attestation`: `bundle-path` удавшейся попытки (`attest2 || attest1`; у пропущенного шага
+   выход пуст).
 
 ## 7. Пины действий
 
@@ -247,7 +263,12 @@ checks: check ─────────────┤
 6. Пакет: доступ Actions — только этот репозиторий, роль Write; публичность (необратимо) — до первого `configure`.
 7. Подтвердить `licenses=AGPL-3.0-only`. Пробная аренда — трата.
 8. По желанию — пробная аттестация на `ci/*` с субъектом-пустышкой до v0.1.0 (запись в Rekor вечная); без неё
-   ошибка в положительном пути `image-verify` стоит версии (v0.1.1).
+   ошибка в положительном пути `image-verify` стоит версии (v0.1.1). Пропущена (004-47): так и вышло, v0.1.0 сгорела
+   на сбое Rekor и сверке раннеров при перезапуске.
+9. **Перезапуск прогона Release** (`gh run rerun`, `gh api …/rerun*`) — это выпуск: только с «да» владельца, как
+   постановка метки (004-48). `image-verify` видит коммит и метку, но не номер попытки и не актора перезапуска; копии
+   заданий в новой попытке сверка раннеров принимает только при верном оригинале (§6 п. 1), но кто и зачем перезапустил,
+   не показывает ни она, ни улика.
 
 **Запасной токен** (только если `GITHUB_TOKEN` не создаст пакет — по документации создаст, §10): классический,
 выпуск на хосте по ссылке `https://github.com/settings/tokens/new?scopes=write:packages`; галочка `write:packages`
@@ -271,6 +292,8 @@ checks: check ─────────────┤
 | `skopeo` 1.13 держит дайджест | гипотеза | `podman push --digestfile` со сверкой |
 | `gh` проверяет манифест как файл | гипотеза | улика — `oci-archive` |
 | перезапуск упавших заданий сохраняет вывод `checks` | гипотеза | новая версия |
+| копии заданий при перезапуске приходят с `runner_group_id = null` | факт (v0.1.0, прогон 42380708848); правило §6 п. 1 | — |
+| сбой Rekor временный | факт на v0.1.0 (500 на создании записи журнала); один повтор §6 п. 2 | v0.1.x заново |
 
 ## 11. Сеть ЦОД CLO → GHCR
 
@@ -315,10 +338,17 @@ checks: check ─────────────┤
   (`denied`, обрыв) → запись и решающая сверка шага 6; после записи тег перевешен другим образом → провал, без
   аттестации; архив не тот, `index.json` с двумя манифестами, артефакт не один файл,
   `mutate_release_artifact` → отказ; токен-приманка не в выводе; файл входа удалён до загрузки.
+- `workflow_static` / `workflow_guard_bypass`, повтор подписи (004-46): `continue-on-error` на `attest2`, на `upload-artifact`
+  в `release-attest` и на шаге `checks.yml` → отказ; `continue-on-error` снят с `attest1` или `false` → отказ; `if` на
+  `attest2` или на паузе пропущен / `always()` → отказ; `sleep 9000`; пауза или `attest2` выброшены; выход загрузки
+  только из `attest1`; две попытки с разными `sha` (оба в lock) → отказ.
 - `runner_check_cases` (синтетические ответы API, тот же текст шага): чужая группа при верной метке → стоп;
   чужая группа на второй странице → стоп; нет `checks / build-image` в ответе → стоп; пустой ответ, ошибка `gh` →
   стоп; вторая попытка: `build-image` первой попытки на чужой группе → стоп; задание без раннера со статусом
-  `skipped` — допустимо, с `success` — стоп; верный ответ → да.
+  `skipped` — допустимо, с `success` — стоп; верный ответ → да. Копии при перезапуске (004-46; фикстура — настоящий ответ
+  API): снимок v0.1.0 → да; подменён `runner_id` копии, `runner_id` копии равен `runner_id` оригинала другого задания,
+  нет оригинала, оригинал на чужой группе, оригинал не `success`, оригинал в той же или более поздней попытке, нет
+  `run_attempt` (или bool), чужое имя группы у копии → стоп.
 - `actions_pins_cases`: пин вне lock, lock не сверен (нет в `actions-pins`), `ls-remote` дал другой коммит →
   отказ/код 3; в ответе `ls-remote` есть только `refs/heads/x/refs/tags/<тег>` → отказ; аннотированная метка —
   берётся `^{}`, а не объект метки; `action.yml` с `using: composite` или `docker://…:<тег>` → отказ.

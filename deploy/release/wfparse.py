@@ -31,7 +31,7 @@ EXPRESSIONS = frozenset(
         "needs.build-image.outputs.digest",
         "jobs.build-image.outputs.digest",
         "steps.build.outputs.digest",
-        "steps.attest.outputs.bundle-path",
+        "steps.attest2.outputs.bundle-path || steps.attest1.outputs.bundle-path",
         "secrets.GITHUB_TOKEN",
         "secrets.RELEASE_PACKAGES_TOKEN",
     }

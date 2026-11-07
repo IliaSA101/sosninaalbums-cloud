@@ -73,6 +73,25 @@ jobs:
                   break
               page, pos = dec.raw_decode(text, pos)
               jobs.extend(page.get("jobs") or [])
+          def hosted(j):
+              return j.get("runner_group_id") == GROUP_ID and j.get("runner_group_name") == GROUP_NAME
+          def attempt(j):
+              a = j.get("run_attempt")
+              return a if type(a) is int else None
+          def is_copy(j):
+              # Rerun copies a finished job from an earlier attempt: same name and runner_id, group id null.
+              # Valid only if that earlier attempt has the original of the same name and runner_id on the right group,
+              # and the original succeeded (GitHub copies only successful jobs).
+              a = attempt(j)
+              if a is None or j.get("runner_id") is None or j.get("runner_group_id") is not None:
+                  return False
+              if j.get("runner_group_name") != GROUP_NAME:
+                  return False
+              for o in jobs:
+                  b = attempt(o)
+                  if b is not None and b < a and o.get("name") == j.get("name") and o.get("runner_id") == j.get("runner_id") and hosted(o) and o.get("conclusion") == "success":
+                      return True
+              return False
           bad, seen = [], set()
           if not jobs:
               bad.append("empty answer")
@@ -84,7 +103,7 @@ jobs:
                   if j.get("conclusion") not in ("skipped", "cancelled"):
                       bad.append(name + ": no runner, conclusion " + str(j.get("conclusion")))
                   continue
-              if j.get("runner_group_id") != GROUP_ID or j.get("runner_group_name") != GROUP_NAME:
+              if not hosted(j) and not is_copy(j):
                   bad.append(name + ": runner group " + str(j.get("runner_group_id")) + " / " + str(j.get("runner_group_name")))
               if j.get("conclusion") == "success":
                   seen.add(name)

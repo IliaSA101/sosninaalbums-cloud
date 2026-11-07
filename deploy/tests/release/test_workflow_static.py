@@ -19,6 +19,8 @@ PUBLISH_PERMS = "      contents: read\n      packages: write\n"
 DOWNLOAD = "          path: ${{ runner.temp }}/release-oci\n"
 CHECKOUT_SHA = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+ATTEST_1 = "      - name: Подпись образа, попытка 1\n"
+RETRY_IF = "        if: steps.attest1.outcome == 'failure'\n"
 GATE_JOB = "  release-gate:\n    timeout-minutes: 10\n    runs-on: ubuntu-24.04\n"
 
 # (правило, файл, что заменить, на что, подстрока в сообщении)
@@ -58,13 +60,26 @@ CASES = [
     ("шаблон метки", "release.yml", 'tags: ["v[0-9]+.[0-9]+.[0-9]+"]', 'tags: ["v*"]', "on -"),
     ("permissions: {} наверху", "release.yml", "permissions: {}\n", "permissions:\n  contents: read\n", "permissions"),
     ("выход digest checks.yml", "checks.yml", "value: ${{ jobs.build-image.outputs.digest }}", "value: ${{ inputs.version }}", "outputs.digest"),
-    ("D из release-publish", "release.yml", "subject-digest: ${{ needs.checks.outputs.digest }}", "subject-digest: ${{ steps.attest.outputs.bundle-path }}", "attest"),
+    ("D из release-publish", "release.yml", "subject-digest: ${{ needs.checks.outputs.digest }}", "subject-digest: ${{ steps.attest1.outputs.bundle-path }}", "attest"),
     ("порядок шагов release-publish", "release.yml", "registry.sh logout", "registry.sh login", "эталону guard"),
     ("if: на шаге стенда", "checks.yml", "      - name: idempotence_full\n", "      - name: idempotence_full\n        if: always()\n", "if:"),
     ("if: у задания выпуска", "release.yml", GATE_JOB, GATE_JOB + "    if: false\n", "вне перечня"),
     ("право write вне release.yml", "ci.yml", "  probe:\n", "  probe:\n    permissions:\n      packages: write\n", "write"),
     ("нет timeout-minutes", "checks.yml", "  check:\n    timeout-minutes: 30\n", "  check:\n", "timeout-minutes"),
-    ("checkout в release-attest", "release.yml", "      - uses: actions/attest@", "      - uses: " + CHECKOUT_SHA + " # v7.0.1\n        with:\n          persist-credentials: false\n      - uses: actions/attest@", "закреплено целиком"),
+    ("checkout в release-attest", "release.yml", ATTEST_1, "      - uses: " + CHECKOUT_SHA + " # v7.0.1\n        with:\n          persist-credentials: false\n" + ATTEST_1, "закреплено целиком"),
+    # --- повтор подписи (004-46): форма шагов release-attest закреплена целиком ---
+    ("continue-on-error на второй попытке подписи", "release.yml", "        id: attest2\n", "        id: attest2\n        continue-on-error: true\n", "continue-on-error вне перечня"),
+    ("continue-on-error снят с первой попытки", "release.yml", "        continue-on-error: true\n", "", "эталону guard"),
+    ("continue-on-error: false вместо true", "release.yml", "        continue-on-error: true\n", "        continue-on-error: false\n", "эталону guard"),
+    ("continue-on-error на шаге вне подписи (checks.yml)", "checks.yml", "      - name: инварианты workflow\n", "      - name: инварианты workflow\n        continue-on-error: true\n", "continue-on-error вне перечня"),
+    ("continue-on-error на upload release-attest", "release.yml", "bundle-path }}\n          if-no-files-found: error\n", "bundle-path }}\n          if-no-files-found: error\n        continue-on-error: true\n", "вне перечня"),
+    ("вторая попытка без if", "release.yml", "        id: attest2\n" + RETRY_IF, "        id: attest2\n", "эталону guard"),
+    ("вторая попытка с if: always()", "release.yml", "        id: attest2\n" + RETRY_IF, "        id: attest2\n        if: always()\n", "эталону guard"),
+    ("пауза без if", "release.yml", RETRY_IF + "        run: sleep 90\n", "        run: sleep 90\n", "эталону guard"),
+    ("пауза 9000 секунд", "release.yml", "run: sleep 90\n", "run: sleep 9000\n", "эталону guard"),
+    ("пауза выброшена", "release.yml", RETRY_IF + "        run: sleep 90\n", "        run: true\n", "эталону guard"),
+    ("вторая попытка выброшена", "release.yml", "        id: attest2\n", "        id: attest3\n", "эталону guard"),
+    ("выход загрузки только из первой попытки", "release.yml", "${{ steps.attest2.outputs.bundle-path || steps.attest1.outputs.bundle-path }}", "${{ steps.attest1.outputs.bundle-path }}", "вне перечня"),
     ("checkout без persist-credentials: false", "release.yml", "          fetch-depth: 0\n          persist-credentials: false\n", "          fetch-depth: 0\n", "persist-credentials"),
     ("сверка раннеров ci.yml ≠ release.yml", "ci.yml", "GROUP_ID = 0", "GROUP_ID = 1", "эталону guard"),
     ("run сверки раннеров не ASCII", "release.yml", "import json, os, sys", "import json, os, sys  # " + chr(0x44F), "не-ASCII"),
@@ -90,6 +105,16 @@ class Static(rtlib.Case):
                 errs = rtlib.check(guard, self.tree([(W + fname, old, new)]))
                 self.assertTrue(errs, f"мутация «{name}» не отклонена")
                 self.assertTrue(any(want in e for e in errs), f"{name}: нет «{want}» в {errs}")
+
+    def test_retry_attempts_must_share_one_pin(self):
+        # обе попытки подписи - ровно один actions/attest@sha: вторая на другой версии (пусть и из lock) - отказ
+        other = "2f7e1c0b9d4a8e6f5b3a1c9d7e5f3b1a9c7e5d3f"
+        real = "1e69f48acb82d1966a394da916b4c1698aa569d6"
+        lock = "deploy/release/actions.lock"
+        root = self.tree([(lock, "actions/attest v4.2.2 " + real, "actions/attest v4.2.2 " + real + "\nactions/attest v4.2.1 " + other),
+                          (W + "release.yml", "actions/attest@" + real + " # v4.2.2\n        id: attest2", "actions/attest@" + other + " # v4.2.1\n        id: attest2")])
+        errs = rtlib.check(guard, root)
+        self.assertTrue(any("одним и тем же actions/attest" in e for e in errs), errs)
 
     def test_unknown_file_in_github(self):
         root = self.tree()

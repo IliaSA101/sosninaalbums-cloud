@@ -14,7 +14,7 @@ import rtlib  # noqa: E402
 
 guard = rtlib.load(os.path.join(rtlib.REL, "workflow_guard.py"), "workflow_guard")
 W = ".github/workflows/"
-ATTEST = "      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2\n"
+ATTEST = "      - name: Подпись образа, попытка 1\n        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2\n"
 GATE_RUN = "        run: bash deploy/release/gate.sh\n"
 GATE_STEP = "      - name: Формат метки, событие и коммит из main\n" + GATE_RUN
 PUB_RUN = 'bash src/deploy/release/publish.sh "$SA_ARCHIVE" "$SA_DIGEST" "$SA_REPO" "$GITHUB_REF_NAME"'
@@ -31,7 +31,8 @@ UPLOAD = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.
 # (имя, файл, что заменить, на что, подстрока в сообщении)
 CASES = [
     ("поток {uses: …} с чужим sha", "release.yml", ATTEST, "      - {uses: actions/attest@ffffffffffffffffffffffffffffffffffffffff}\n", "двоеточие"),
-    ('ключ "uses" в кавычках', "release.yml", "      - uses: actions/attest@", '      - "uses": actions/attest@', "кавычки"),
+    ('ключ "uses" в кавычках', "release.yml", "      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: release-attestation", '      - "uses": actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2\n        with:\n          name: release-attestation', "кавычки"),
+    ('ключ "uses" в кавычках (шаг с name)', "release.yml", "        uses: actions/attest@", '        "uses": actions/attest@', "в кавычках"),
     ("ключ 'runs-on' в кавычках", "release.yml", "  release-gate:\n    timeout-minutes: 10\n    runs-on: ubuntu-24.04", "  release-gate:\n    timeout-minutes: 10\n    'runs-on': ubuntu-24.04", "не вида «ключ"),
     ("якорь &a", "release.yml", "      - name: Формат метки, событие и коммит из main\n", "      - name: &a Формат метки\n", "служебного знака"),
     ("ссылка *a", "release.yml", GATE_RUN, "        run: *a\n", "служебного знака"),
@@ -102,7 +103,9 @@ ENV_PLACES = [
     ("release.yml", LOGIN_ENV, False, "эталону guard"),
     ("release.yml", REQ_ENV, False, "эталону guard"),
     ("release.yml", GATE_RUN, True, "эталону guard"),
-    ("release.yml", "        id: attest\n", True, "эталону guard"),
+    ("release.yml", "        id: attest1\n", True, "эталону guard"),
+    ("release.yml", "        id: attest2\n", True, "эталону guard"),
+    ("release.yml", "        run: sleep 90\n", True, "эталону guard"),
     ("checks.yml", BUILD_ENV, False, "эталону guard"),
     ("ci.yml", REQ_ENV.replace(";release-publish", ""), False, "эталону guard"),
     ("checks.yml", "      - name: инварианты workflow\n", True, "вне перечня"),
