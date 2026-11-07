@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Поддельный tofu для provision_cli: пишет argv, проверяет, что токен дошёл (через tofu-entry.sh), отдаёт
+# заготовленные state (многострочный JSON, как настоящий) и output. FAKE_STATE_LEAK=1 — в state попал private_key.
+# shellcheck source-path=SCRIPTDIR
+set -uo pipefail
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../fixtures/values.env
+. "$here/../fixtures/values.env"
+printf 'TOFU %s\n' "$*" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+case ${1:-} in
+	init)
+		if [ "${FAKE_INIT_FAIL:-}" = 1 ]; then
+			echo "shim: init не прошёл (FAKE_INIT_FAIL)" >&2
+			exit 1
+		fi
+		# -plugin-dir=/state/…: архив провайдера обязан уже лежать в зеркале (packed layout), как у настоящего init.
+		for a in "$@"; do
+			case $a in
+				-plugin-dir=/state/*)
+					if compgen -G "${SHIM_STATE:-/nonexistent}/${a#-plugin-dir=/state/}/registry.opentofu.org/*/*/terraform-provider-*.zip" >/dev/null; then
+						echo "MIRROR-PRESENT" >>"$SHIM_LOG"
+					else echo "MIRROR-MISSING" >>"$SHIM_LOG"; fi
+					;;
+			esac
+		done
+		;;
+	validate)
+		# Без файла-тома секрета: validate идёт мимо tofu-entry.sh; провайдер, не совпавший с lock, настоящий tofu отвергает здесь.
+		[ -z "${TF_VAR_clo_api_token:-}" ] || echo "TOFU-SECRET-IN-VALIDATE" >>"$SHIM_LOG"
+		if [ "${FAKE_VALIDATE_FAIL:-}" = 1 ]; then
+			echo "shim: validate не прошёл (FAKE_VALIDATE_FAIL)" >&2
+			exit 1
+		fi
+		;;
+	apply)
+		if [ "${TF_VAR_clo_api_token:-}" = "$MARKER" ]; then echo "TOFU-TOKEN-OK" >>"$SHIM_LOG"; else echo "TOFU-TOKEN-MISSING" >>"$SHIM_LOG"; fi
+		;;
+	show)
+		if [ "${FAKE_STATE_LEAK:-}" = 1 ]; then leak='"private_key": "abc",'; else leak='"public_key": "ssh-ed25519 AAAA",'; fi
+		cat <<EOF
+{
+  "format_version": "1.0",
+  "values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "clo_compute_keypair.admin",
+          "values": {
+            $leak
+            "name": "example"
+          }
+        }
+      ]
+    }
+  }
+}
+EOF
+		;;
+	output)
+		if [ "${2:-}" = -raw ] && [ "${3:-}" = ipv4 ]; then printf '%s' 127.0.0.1; fi
+		;;
+esac
+exit 0

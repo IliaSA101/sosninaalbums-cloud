@@ -1,0 +1,39 @@
+# Приватная оснастка и документы — в отдельном репозитории с общим рабочим деревом.
+.claude/
+CLAUDE.md
+docs/private/
+# Секреты и адреса окружения; пример — deploy/inventory.example/.
+deploy/inventory/
+# Состояние Terraform/OpenTofu содержит адреса и ключи.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl.bak
+.terraform.tfstate.lock.info
+# Значения переменных и сохранённый план содержат секреты в открытом виде.
+*.tfvars
+*.tfvars.json
+*.tfplan
+# Пароль ansible-vault — ключ ко всем секретам inventory.
+.vault-pass*
+# Данные стенда (альбомы), временное, окружения.
+data/
+.gotmp/
+.venv/
+# Кэш байт-кода Python (проверки cloud-init, pytest): двоичное не попадает ни в git, ни в копию для теста раскатки.
+__pycache__/
+*.pyc
+.env
+.env.*
+# Сборка, покрытие, редакторы, локальные переопределения и журналы.
+bin/
+dist/
+coverage/
+*.log
+*.local.json
+*.local.yaml
+*.local.yml
+.vscode/
+.idea/
+.obsidian/
+docs/archive/

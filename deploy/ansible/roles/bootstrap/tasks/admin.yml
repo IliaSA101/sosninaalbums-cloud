@@ -1,0 +1,130 @@
+---
+# Администратор: ключи, пароль (по нему же sudo и веб-консоль провайдера), группа sudo, без subuid/subgid
+# (иначе у него был бы uid процесса сервиса, design §7). Дальше — пробный вход; не прошёл — прежние ключи и
+# пароль возвращаются, прогон падает.
+- name: Прежний пароль администратора (для отката)
+  ansible.builtin.getent:
+    database: shadow
+    key: "{{ admin_user }}"
+    fail_key: false
+  register: bootstrap_prev_shadow
+  no_log: true
+
+- name: Прежний authorized_keys администратора (для отката)
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_admin_home }}/.ssh/authorized_keys"
+  register: bootstrap_prev_keys
+  failed_when: false
+
+- name: Запись администратора в passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ admin_user }}"
+    fail_key: false
+  register: bootstrap_admin_entry
+
+# useradd с -K: модуль user не умеет отключать выдачу subuid, а по умолчанию её даёт login.defs.
+- name: Создание администратора без subuid и subgid
+  ansible.builtin.command:
+    argv:
+      - useradd
+      - --create-home
+      - --home-dir
+      - "{{ bootstrap_admin_home }}"
+      - --shell
+      - /bin/bash
+      - -K
+      - SUB_UID_COUNT=0
+      - -K
+      - SUB_GID_COUNT=0
+      - "{{ admin_user }}"
+  when: bootstrap_admin_entry.ansible_facts.getent_passwd[admin_user] is none
+  changed_when: true
+
+- name: Администратор — группа sudo (по паролю), оболочка
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    groups: sudo
+    append: true
+    shell: /bin/bash
+
+- name: Текущий пароль администратора
+  ansible.builtin.getent:
+    database: shadow
+    key: "{{ admin_user }}"
+  register: bootstrap_cur_shadow
+  no_log: true
+
+# Хэш — через chpasswd -e и stdin: модуль user передал бы его аргументом usermod -p (виден в ps и в журнале
+# аудита). Меняется только при расхождении: повтор прогона остаётся без изменений.
+- name: Пароль администратора (хэш из vault)
+  ansible.builtin.command:
+    argv: [chpasswd, -e]
+    stdin: "{{ admin_user }}:{{ vault_admin_password_hash }}"
+  when: bootstrap_cur_shadow.ansible_facts.getent_shadow[admin_user][0] != vault_admin_password_hash
+  changed_when: true
+  no_log: true
+
+- name: Администратору не положены subuid и subgid
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ admin_user }}:"
+    state: absent
+  loop:
+    - subuid
+    - subgid
+
+- name: Ключи администратора — ровно заданные
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    key: "{{ admin_ssh_keys | join('\n') }}"
+    exclusive: true
+    manage_dir: true
+  register: bootstrap_admin_keys
+
+# site.yml идёт после bootstrap.yml: ключи администратора к этому времени уже на месте. Пришлось менять — их
+# правили извне (запись с command= или чужой ключ): прогон падает, а файл уже возвращён к заданному.
+- name: Ключи администратора не менялись с прошлого прогона
+  ansible.builtin.assert:
+    that: not bootstrap_admin_keys.changed
+    quiet: true
+    fail_msg: >-
+      authorized_keys администратора пришлось менять: его правили вне раскатки (файл уже возвращён к
+      admin_ssh_keys); выяснить, кто и зачем, прежде чем продолжать
+  when: bootstrap_keys_must_stay | default(false) | bool
+
+# Проверка идёт при каждом прогоне, а не только при изменении: прошлый прогон мог остановиться после
+# создания администратора, и тогда «изменений нет» не значило бы «вход работает».
+- name: Вход администратора проверен до закрытия SSH
+  block:
+    - name: Пробный вход администратора с контроллера (ключ, sudo -S -v)
+      ansible.builtin.include_tasks: probe_login.yml
+  rescue:
+    - name: Откат ключей администратора
+      ansible.builtin.copy:
+        content: "{{ bootstrap_prev_keys.content | b64decode }}"
+        dest: "{{ bootstrap_admin_home }}/.ssh/authorized_keys"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: "0600"
+      when: bootstrap_prev_keys.content is defined
+
+    - name: Откат пароля администратора
+      ansible.builtin.command:
+        argv: [chpasswd, -e]
+        stdin: "{{ admin_user }}:{{ bootstrap_prev_shadow.ansible_facts.getent_shadow[admin_user][0] }}"
+      when: bootstrap_prev_shadow.ansible_facts.getent_shadow[admin_user][0] | default('') is match('^\$')
+      changed_when: true
+      no_log: true
+
+    - name: Результат пробного входа (код и stderr ssh, секретов нет)
+      ansible.builtin.debug:
+        msg: "ssh и sudo: код {{ bootstrap_probe.rc | default('нет') }}; stderr: {{ bootstrap_probe.stderr | default('') }}"
+      when: bootstrap_probe is defined and bootstrap_probe is failed
+
+    - name: Остановка — вход администратора не подтверждён
+      ansible.builtin.fail:
+        msg: >-
+          Пробный вход администратора не прошёл: прежние ключи и пароль (если были) возвращены (если
+          менялись в этом прогоне); root в этом прогоне не закрывался, sshd не менялся.
+          Причина — в выводе задачи входа (значения скрыты no_log; проверьте ключи и пароль в inventory).

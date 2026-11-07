@@ -1,0 +1,11 @@
+# Образ provision_cli (спека 002, design §12): всё, что нужно прогнать provision.sh без сети и сервера —
+# bash, git, настоящие age, ssh-agent, ssh-add, ssh-keygen, zstd, tar и python3 (псевдотерминал). Поддельны
+# только podman, tofu, ssh, loginctl и less (cli/shim). Пользователь saops (uid 1000) — «учётная запись раскатки».
+# База — по дайджесту индекса (та же, что у цели стенда); обновляется осознанно.
+FROM public.ecr.aws/docker/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash git openssh-client age zstd tar util-linux less python3 procps ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 -s /bin/bash saops

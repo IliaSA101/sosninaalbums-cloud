@@ -1,0 +1,7 @@
+# Прямые зависимости контроллера раскатки (ansible, ansible-lint, yamllint); точные версии и хэши — в
+# requirements.txt (pip-compile --generate-hashes). Пакет ansible — с коллекциями ansible.posix и
+# community.general: их берут роли, из Galaxy они не ставятся (design 002 §4). Тот же набор строит образ
+# проверок стенда (решение П2a-4): один файл с хэшами, а не два.
+ansible
+ansible-lint
+yamllint

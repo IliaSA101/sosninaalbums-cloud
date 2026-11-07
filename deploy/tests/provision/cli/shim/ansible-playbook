@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Поддельный ansible-playbook для provision_cli: пишет argv, проверяет, что пароль vault пришёл каналом (fd 3).
+# shellcheck source-path=SCRIPTDIR
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../fixtures/values.env
+. "$here/../fixtures/values.env"
+printf 'ANSIBLE %s\n' "$*" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+v=$(cat /dev/fd/3)
+if [ "$v" = "$VAULT" ]; then echo ANSIBLE-VAULT-OK >>"$SHIM_LOG"; fi
+exit "${FAKE_ANSIBLE_RC:-0}" # FAKE_ANSIBLE_RC — упавший плей (учёт раскатанного образа не пишется)

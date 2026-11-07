@@ -1,0 +1,22 @@
+---
+# Rootless Podman из Debian и маскировка ненужных юнитов (design 002 §10). Сам сервис и его Quadlet — роль albums_svc.
+- name: Пакеты Podman
+  ansible.builtin.apt:
+    name: "{{ podman_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Системные юниты — mask в /etc/systemd/system, пользовательские (для всех, в том числе albums) — --global.
+- name: Системные podman.socket и podman-auto-update.timer замаскированы
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: true
+  loop: "{{ podman_masked_units }}"
+
+- name: Пользовательские podman.socket и podman-auto-update.timer замаскированы (systemctl --global)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: true
+    scope: global
+  loop: "{{ podman_masked_units }}"

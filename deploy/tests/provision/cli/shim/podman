@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Поддельный podman для provision_cli (design 002 §12): пишет argv в $SHIM_LOG и исполняет «команду контейнера»
+# здесь же (age, bash, tofu-entry.sh → поддельный tofu). Тома /run/sa/* и /in/* — симлинки на источник; путь
+# команды внутри тома пересчитывается на хост. Окружение — как у контейнера: чистое плюс -e (и FAKE_*/SHIM_*
+# для управления тестом). Настоящий podman проверяет гипотезы отдельно (cli/h1.sh).
+set -uo pipefail
+# Открытые файлы самого podman (метка <кто>) и демона агента ключей (agent): среди них не должно быть блокировки
+# inventory/.lock — её наследовали бы и пережили SIGKILL provision.sh (nolock в ops/ctl-run.sh).
+dump_fds() { # <метка для самого shim: build|podman>
+	local p who f
+	for p in $$ $(pgrep -x ssh-agent); do
+		who=agent
+		[ "$p" != "$$" ] || who=$1
+		for f in "/proc/$p"/fd/*; do printf 'FD %s %s\n' "$who" "$(readlink "$f")" >>"$SHIM_LOG"; done
+	done
+}
+sub=${1:-}
+shift || true
+case $sub in
+	build)
+		dump_fds build
+		if [ "${FAKE_BUILD_FAIL:-}" = 1 ]; then
+			echo "shim: сборка не удалась (FAKE_BUILD_FAIL)" >&2
+			exit 1
+		fi
+		printf 'BUILD %s\n' "$*" >>"$SHIM_LOG"
+		echo sha256:0000000000000000000000000000000000000000000000000000000000000000
+		exit 0
+		;;
+	run) ;;
+	*)
+		echo "shim: podman $sub не поддержан" >&2
+		exit 125
+		;;
+esac
+orig=("$@")
+name='' logdrv='' entry='' envs=() maps=()
+while [ $# -gt 0 ]; do
+	case $1 in
+		--name) name=$2; shift 2 ;;
+		--log-driver=*) logdrv=${1#*=}; shift ;;
+		-v) maps+=("$2"); shift 2 ;;
+		-e) envs+=("$2"); shift 2 ;;
+		-w | --tmpfs | --user) shift 2 ;;
+		--entrypoint) entry=$2; shift 2 ;;
+		-*) shift ;;
+		*) break ;;
+	esac
+done
+image=$1
+shift
+cmd=("$@")
+[ -z "$entry" ] || cmd=("$entry" "${cmd[@]}")
+printf 'RUN name=%s log=%s image=%s argv=%s\n' "$name" "$logdrv" "$image" "${orig[*]}" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+dump_fds podman
+links=()
+for m in "${maps[@]}"; do
+	src=${m%%:*}
+	rest=${m#*:}
+	dst=${rest%%:*}
+	[ "$dst" != /state ] || export SHIM_STATE=$src # каталог state (inventory/tofu): shim tofu сверяет зеркало провайдера
+	case $dst in
+		/run/sa/* | /in/*)
+			ln -sfn "$src" "$dst"
+			links+=("$dst")
+			;;
+	esac
+	case ${cmd[0]} in "$dst"/*) cmd[0]="$src/${cmd[0]#"$dst"/}" ;; esac
+done
+# gh и guard проверки образа (ops/image.sh): ENTRYPOINT образа gh — fake-gh, пути томов в аргументах пересчитываются на
+# хост (только здесь: у остальных команд аргументы должны остаться как есть, на них смотрят проверки журнала).
+case ${name:-} in
+	sa-prov-pins-*)
+		# runs.using через PyYAML в контроллере (ops/tools.sh): в образе теста PyYAML нет, здесь — грубый заменитель (настоящий
+		# разбор проверяет шаг actions_pins). Файл action.yml — последний аргумент (путь тома → хост).
+		for m in "${maps[@]}"; do
+			# shellcheck disable=SC2016  # $1 раскрывает внутренний bash
+			[ "${m#*:}" != "/in/action.yml:ro" ] || cmd=(bash -c 'grep -Eq "^[[:space:]]*using:[[:space:]]*node[0-9]+" "$1"' _ "${m%%:*}")
+		done
+		;;
+esac
+case ${cmd[0]} in
+	attestation | --version | python3)
+		for ((i = 0; i < ${#cmd[@]}; i++)); do
+			for m in "${maps[@]}"; do
+				src=${m%%:*}
+				rest=${m#*:}
+				dst=${rest%%:*}
+				case ${cmd[i]} in "$dst" | "$dst"/*) cmd[i]="$src${cmd[i]#"$dst"}" ;; esac
+			done
+		done
+		case ${cmd[0]} in python3) ;; *) cmd=("$(dirname -- "${BASH_SOURCE[0]}")/fake-gh" "${cmd[@]}") ;; esac
+		;;
+esac
+pass=()
+while IFS= read -r v; do
+	case $v in FAKE_* | SHIM_*) pass+=("$v=${!v}") ;; esac
+done < <(compgen -e)
+env -i PATH="$PATH" HOME=/tmp "${pass[@]}" "${envs[@]}" "${cmd[@]}"
+rc=$?
+for l in "${links[@]}"; do rm -f -- "$l"; done
+exit "$rc"

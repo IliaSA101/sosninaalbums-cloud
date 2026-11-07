@@ -1,0 +1,9 @@
+---
+# Содержимое /etc/subuid и /etc/subgid: общее для assert.yml (до изменений) и verify.yml. Нет файла — пустая строка.
+- name: Файлы /etc/subuid и /etc/subgid
+  ansible.builtin.slurp:
+    src: "/etc/{{ item }}"
+  loop: [subuid, subgid]
+  register: albums_svc_subid_raw
+  failed_when: false
+  tags: [verify_albums, verify_users]

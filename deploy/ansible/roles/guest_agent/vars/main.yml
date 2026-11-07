@@ -1,0 +1,15 @@
+---
+# Белый список команд агента провайдера (design 002 §10, решение 002-9): ping, sync, info, заморозка ФС
+# для снимков, выключение. Выполнение команд и запись файлов от root мимо SSH (то, что даёт сброс пароля
+# из панели) в списке нет; новые команды в обновлениях агента закрыты по умолчанию.
+guest_agent_rpcs:
+  - guest-ping
+  - guest-sync
+  - guest-sync-delimited
+  - guest-info
+  - guest-fsfreeze-status
+  - guest-fsfreeze-freeze
+  - guest-fsfreeze-thaw
+  - guest-shutdown
+guest_agent_binary: /usr/sbin/qemu-ga
+guest_agent_conf: /etc/qemu/sa-qga.conf
