@@ -1,0 +1,6 @@
+---
+- name: Перезапустить journald
+  ansible.builtin.systemd_service:
+    name: systemd-journald
+    state: restarted
+  listen: restart journald

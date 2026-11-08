@@ -1,0 +1,21 @@
+---
+- name: Перечитать юниты systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: reload qemu-guest-agent
+
+# Юнит запускает udev при появлении виртуального порта агента; если агент не запущен (нет порта) или пакета
+# ещё нет, перезапуск не нужен и был бы ошибкой (BindsTo на отсутствующее устройство). Запущенный агент
+# работает со старым списком команд до перезапуска — поэтому перезапуск при изменении настроек обязателен.
+- name: Узнать состояние агента
+  ansible.builtin.systemd_service:
+    name: qemu-guest-agent.service
+  register: guest_agent_unit
+  listen: reload qemu-guest-agent
+
+- name: Перезапустить агент, если он запущен
+  ansible.builtin.systemd_service:
+    name: qemu-guest-agent.service
+    state: restarted
+  when: guest_agent_unit.status.ActiveState | default('') == 'active'
+  listen: reload qemu-guest-agent

@@ -1,0 +1,90 @@
+---
+# 00-sa.conf: проверка sshd -t до записи, reload, проверка итоговой конфигурации, пробный вход, отказ в пароле. Любая ошибка внутри блока — прежний файл
+# возвращается (или удаляется, если его не было), sshd перечитывает конфигурацию, прогон падает.
+# Существующая сессия переживает reload, так что откат идёт по живому соединению.
+- name: Прежний 00-sa.conf
+  ansible.builtin.stat:
+    path: "{{ bootstrap_sshd_conf }}"
+  register: bootstrap_sshd_before
+
+- name: Конфигурация sshd с пробным входом
+  block:
+    - name: 00-sa.conf
+      ansible.builtin.template:
+        src: 00-sa.conf.j2
+        dest: "{{ bootstrap_sshd_conf }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        validate: /usr/sbin/sshd -t -f %s
+      register: bootstrap_sshd_conf_result
+
+    - name: Итоговая конфигурация sshd целиком
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
+
+    # reload при каждом прогоне, а не только при изменении шаблона: sshd -T читает конфигурацию с диска, а не
+    # из демона, и прерванный прогон (файл записан, reload не выполнен) иначе остался бы незамеченным —
+    # все следующие прогоны были бы «без изменений», а демон работал бы со старой конфигурацией.
+    - name: Демон sshd читает конфигурацию с диска
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded
+      changed_when: false
+
+    # Проверка действующих значений — до пробного входа и до закрытия root: провал откатывает 00-sa.conf.
+    - name: Действующая конфигурация sshd (sshd -T), Match и Include
+      ansible.builtin.include_tasks: sshd_effective.yml
+
+    - name: Повторный пробный вход администратора под новой конфигурацией
+      ansible.builtin.include_tasks: probe_login.yml
+
+    # Отрицательная проверка — после положительной (штрафы PerSourcePenalties) и до закрытия root.
+    - name: Вход по паролю отвергнут (проверка с контроллера)
+      ansible.builtin.include_tasks: probe_password_denied.yml
+
+    - name: Копия прежнего 00-sa.conf больше не нужна
+      ansible.builtin.file:
+        path: "{{ bootstrap_sshd_conf_result.backup_file }}"
+        state: absent
+      when: bootstrap_sshd_conf_result.backup_file is defined
+  rescue:
+    - name: Возврат прежнего 00-sa.conf
+      ansible.builtin.copy:
+        src: "{{ bootstrap_sshd_conf_result.backup_file }}"
+        dest: "{{ bootstrap_sshd_conf }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: bootstrap_sshd_conf_result.backup_file is defined
+
+    - name: Копия прежнего 00-sa.conf после возврата больше не нужна
+      ansible.builtin.file:
+        path: "{{ bootstrap_sshd_conf_result.backup_file }}"
+        state: absent
+      when: bootstrap_sshd_conf_result.backup_file is defined
+
+    - name: Удаление нового 00-sa.conf (прежнего не было)
+      ansible.builtin.file:
+        path: "{{ bootstrap_sshd_conf }}"
+        state: absent
+      when: bootstrap_sshd_conf_result.backup_file is not defined and not bootstrap_sshd_before.stat.exists
+
+    - name: Перечитывание sshd после отката
+      ansible.builtin.systemd_service:
+        name: ssh
+        state: reloaded
+
+    - name: Результат пробного входа (код и stderr ssh, секретов нет)
+      ansible.builtin.debug:
+        msg: "ssh и sudo: код {{ bootstrap_probe.rc | default('нет') }}; stderr: {{ bootstrap_probe.stderr | default('') }}"
+      when: bootstrap_probe is defined and bootstrap_probe is failed
+
+    - name: Остановка — проверка sshd не прошла
+      ansible.builtin.fail:
+        msg: >-
+          Проверка sshd не прошла (действующие значения, Match или Include, пробный вход, отказ в пароле): если
+          00-sa.conf менялся в этом прогоне, прежний возвращён (или новый удалён); sshd перечитал конфигурацию;
+          root в этом прогоне не закрывался. Причина — в выводе выше.

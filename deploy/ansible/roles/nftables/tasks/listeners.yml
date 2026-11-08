@@ -1,0 +1,32 @@
+---
+# Слушатели вне lo (design 002 §6, спека 005, 005-25): второй рубеж после nftables. Файл включают verify.yml (стенд, тег
+# verify_listeners) и post_tasks site.yml (каждый configure). Ничего не меняет.
+- name: "Проверка verify_listeners: ss -Htulpn"
+  ansible.builtin.command: ss -Htulpn
+  register: nftables_ss
+  changed_when: false
+  tags: [verify_listeners]
+
+# Разрешено вне lo: sshd на 22, caddy на 80 и 443, DHCP-клиент (udp 68, 546). Всё остальное — ошибка:
+# служба, случайно слушающая на всех адресах, не должна полагаться на один только фильтр (второй рубеж).
+- name: "Проверка verify_listeners: вне lo слушают только sshd, caddy и DHCP-клиент"
+  ansible.builtin.assert:
+    that: (nftables_listen_bad | from_json) | length == 0
+    quiet: true
+    fail_msg: "слушатель вне lo не из списка (sshd:22, caddy:80,443, DHCP): {{ nftables_listen_bad }}"
+  vars:
+    nftables_listen_bad: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for line in nftables_ss.stdout_lines -%}
+      {%- set f = line.split() -%}
+      {%- set a = f[4].rsplit(':', 1) -%}
+      {%- set host = a[0] | replace('[', '') | replace(']', '') | split('%') | first -%}
+      {%- set proc = line.split('((\"')[1].split('\"')[0] if '((\"' in line else '?' -%}
+      {%- set ok = host.startswith('127.') or host == '::1'
+          or (f[0] == 'tcp' and a[1] == '22' and proc == 'sshd')
+          or (f[0] == 'tcp' and a[1] in ['80', '443'] and proc == 'caddy')
+          or (f[0] == 'udp' and a[1] in ['68', '546'] and proc in ['dhclient', 'systemd-network', 'dhcpcd', 'NetworkManager']) -%}
+      {%- if not ok -%}{%- set ns.bad = ns.bad + [f[0] ~ ' ' ~ f[4] ~ ' ' ~ proc] -%}{%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad | to_json }}
+  tags: [verify_listeners]

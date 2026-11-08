@@ -1,0 +1,7 @@
+# Официальный apt-репозиторий Caddy (deb822). Доверие — только к ключу из репозитория раскатки (Signed-By),
+# отпечаток сверяет роль caddy; общий ключ apt не используется.
+Types: deb
+URIs: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+Suites: any-version
+Components: main
+Signed-By: {{ caddy_key_dest }}

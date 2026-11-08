@@ -1,0 +1,62 @@
+---
+# Пользователь albums (design 002 §9): без входа, пароль «*», без дополнительных групп, дом 0700; subuid и
+# subgid — ровно по inventory. useradd с -K: login.defs иначе выдал бы свой диапазон (как у администратора).
+- name: Группа albums
+  ansible.builtin.group:
+    name: "{{ albums_svc_user }}"
+
+- name: Запись albums в passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ albums_svc_user }}"
+    fail_key: false
+  register: albums_svc_entry
+
+- name: Создание albums без автоматических subuid и subgid
+  ansible.builtin.command:
+    argv:
+      - useradd
+      - --create-home
+      - --home-dir
+      - "{{ albums_svc_home }}"
+      - --gid
+      - "{{ albums_svc_user }}"
+      - --shell
+      - /usr/sbin/nologin
+      - -K
+      - SUB_UID_COUNT=0
+      - -K
+      - SUB_GID_COUNT=0
+      - "{{ albums_svc_user }}"
+  when: albums_svc_entry.ansible_facts.getent_passwd[albums_svc_user] is none
+  changed_when: true
+
+- name: Пользователь albums — без входа, без дополнительных групп, пароль «*»
+  ansible.builtin.user:
+    name: "{{ albums_svc_user }}"
+    shell: /usr/sbin/nologin
+    groups: ""
+    append: false
+    password: "*"
+    update_password: always
+
+- name: Дом albums — 0700
+  ansible.builtin.file:
+    path: "{{ albums_svc_home }}"
+    state: directory
+    owner: "{{ albums_svc_user }}"
+    group: "{{ albums_svc_user }}"
+    mode: "0700"
+
+# Строка ставится ровно по inventory; изменилась — podman system migrate и chown данных (runtime.yml, runbook).
+- name: Диапазон subuid и subgid albums — ровно по inventory
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ albums_svc_user }}:"
+    line: "{{ albums_svc_user }}:{{ albums_svc_sub_start }}:{{ albums_svc_sub_count }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [subuid, subgid]
+  register: albums_svc_subid_res

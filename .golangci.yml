@@ -1,0 +1,149 @@
+# Конфиг golangci-lint v2 (проверено на 2.15.0: golangci-lint config verify).
+# Правило проекта — ноль находок. Исключение либо здесь с причиной, либо
+# //nolint:правило // причина в коде. Молча игнорировать нельзя.
+# Сервис публичный и принимает файлы из сети, поэтому gosec — целиком, без исключений
+# G301/G302/G304/G306: права 0600/0700 и os.Root — требование, а не помеха (docs/specs/0.1/decisions.md).
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec
+    - revive
+    - errorlint # ошибки через %w и errors.Is/As, а не сравнение строк и приведение типов
+    - noctx     # context.Context во всём I/O — ловит запросы без него
+    - bodyclose # незакрытый Body утекает соединениями
+    - depguard  # запрещённые пакеты и слои пакетов (ниже)
+    - forbidigo # запрещённые вызовы (ниже)
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: var-declaration
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    depguard:
+      # Слои пакетов — по спеке 001 (docs/specs/0.1/001-albums-svc/design.md §9): сеть, файловая система и
+      # системные вызовы собраны в немногих пакетах, чтобы проверку путей, пределы и права нельзя было обойти
+      # в стороне. Шаблон «os$» — точное имя: os/signal и прочие подпакеты правило не трогает.
+      rules:
+        main:
+          list-mode: lax
+          deny:
+            # id альбома, токены, соль и cookie — секреты: предсказуемый генератор их выдаёт.
+            - pkg: math/rand
+              desc: "только crypto/rand: id, токены и соль должны быть непредсказуемы"
+            - pkg: math/rand/v2
+              desc: "только crypto/rand: id, токены и соль должны быть непредсказуемы"
+            # Журнал — только через internal/logx: там политика, что писать нельзя (токены, путь /a/, id открытым).
+            - pkg: log$
+              desc: "журнал — через internal/logx (log/slog), stdlib log в обход политики журнала"
+            # Подделка сервиса контракта — только для тестов (_test.go в depguard не проверяются).
+            - pkg: github.com/IliaSA101/sosninaalbums/api/albums/albumstest
+              desc: "albumstest — только в _test.go"
+        net-http:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/cmd/**"
+            - "!**/internal/api/**"
+            - "!**/internal/view/**"
+          deny:
+            - pkg: net/http
+              desc: "HTTP — только cmd, internal/api и internal/view (design §9)"
+        filesystem:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/cmd/**"
+            - "!**/internal/store/**"
+            - "!**/internal/config/**"
+          deny:
+            - pkg: os$
+              desc: "файловая система — только internal/store (os.Root), internal/config и cmd (design §9)"
+            - pkg: path/filepath
+              desc: "пути на диске — только internal/store, internal/config и cmd (design §9)"
+        syscall:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/store/**"
+            - "!**/cmd/**" # syscall.SIGTERM: им Podman останавливает контейнер
+          deny:
+            - pkg: syscall
+              desc: "системные вызовы — только internal/store (Statfs) и cmd (SIGTERM)"
+            - pkg: golang.org/x/sys
+              desc: "системные вызовы — только internal/store (Statfs) и cmd (SIGTERM)"
+        core-no-transport:
+          list-mode: lax
+          files:
+            - "**/internal/album/**"
+            - "**/internal/access/**"
+            - "**/internal/imgcheck/**"
+            - "**/internal/store/**"
+          deny:
+            - pkg: github.com/IliaSA101/sosninaalbums-cloud/internal/api
+              desc: "ядро не знает о транспорте: зависимость только сверху вниз (design §9)"
+            - pkg: github.com/IliaSA101/sosninaalbums-cloud/internal/view
+              desc: "ядро не знает о транспорте: зависимость только сверху вниз (design §9)"
+        api-no-view:
+          list-mode: lax
+          files:
+            - "**/internal/api/**"
+          deny:
+            - pkg: github.com/IliaSA101/sosninaalbums-cloud/internal/view
+              desc: "api и view не зависят друг от друга (design §9)"
+        view-no-api:
+          list-mode: lax
+          files:
+            - "**/internal/view/**"
+          deny:
+            - pkg: github.com/IliaSA101/sosninaalbums-cloud/internal/api
+              desc: "api и view не зависят друг от друга (design §9)"
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # Клиент без тайм-аута висит вечно на медленном ответе — свой http.Client с Timeout.
+        - pattern: ^http\.DefaultClient$
+          msg: "свой http.Client с Timeout"
+        - pattern: ^http\.(Get|Head|Post|PostForm)$
+          msg: "это http.DefaultClient без тайм-аута — свой http.Client с Timeout"
+        # Сервер без ReadHeaderTimeout/ReadTimeout держит соединения медленного клиента (Slowloris).
+        - pattern: ^http\.(ListenAndServe|ListenAndServeTLS|Serve|ServeTLS)$
+          msg: "свой http.Server с тайм-аутами и MaxHeaderBytes"
+  exclusions:
+    generated: lax
+    paths:
+      - .gotmp
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec    # тесты сами создают файлы с нарочно странными правами и содержимым
+          - errcheck
+          - depguard # тестовые изображения генерируются детерминированно, с зерном (math/rand/v2)
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - .gotmp

@@ -1,0 +1,89 @@
+---
+# Внутренние значения роли (design 002 §9). Что приходит из inventory — см. defaults/main.yml.
+albums_svc_user: albums
+albums_svc_home: /home/albums
+albums_svc_conf_dir: /etc/albums-svc
+albums_svc_conf_file: /etc/albums-svc/config.json
+albums_svc_state_dir: /var/lib/albums-svc
+albums_svc_data_dir: /var/lib/albums-svc/data
+albums_svc_quadlet_dir: "{{ albums_svc_home }}/.config/containers/systemd"
+albums_svc_quadlet_file: "{{ albums_svc_quadlet_dir }}/albums-svc.container"
+albums_svc_tmpfiles_dest: /etc/tmpfiles.d/albums-svc.conf
+albums_svc_secret_name: albums_master
+
+# Артефакты — из deploy/ по пути от playbook_dir (design 002 §1).
+albums_svc_tmpfiles_src: "{{ playbook_dir }}/../systemd/albums-svc.tmpfiles.conf"
+
+# Диапазон subuid/subgid: "<начало>:<число>"; процесс сервиса — uid 65532 в карте, на хосте это начало + 65531
+# (карта «0 → начало»: контейнерный uid N лежит на хосте в начало + N - 1, пользователь albums — контейнерный 0).
+albums_svc_sub_start: "{{ albums_subuid.split(':')[0] | int }}"
+albums_svc_sub_count: "{{ albums_subuid.split(':')[1] | int }}"
+albums_svc_proc_uid: "{{ albums_svc_sub_start | int + 65531 }}"
+albums_svc_proc_gid: "{{ albums_svc_sub_start | int + 65531 }}"
+# Uid самого пользователя albums на хосте (для XDG_RUNTIME_DIR); известен после user.yml.
+albums_svc_host_uid: "{{ ansible_facts.getent_passwd[albums_svc_user][1] }}"
+
+# Границы диапазона: ниже — системные uid и DynamicUser (61184-65519), выше — диапазоны systemd-nspawn.
+albums_svc_sub_min_start: 100000
+albums_svc_sub_max_end: 524287
+albums_svc_sub_min_count: 65536
+
+albums_svc_slug_re: '^[a-z0-9][a-z0-9-]{0,31}\Z'
+albums_svc_sha256_re: '^[0-9a-f]{64}\Z'
+# base64url без заполнения, не менее 32 байт (43 знака): albums-svc -gen-secret.
+albums_svc_master_re: '^[A-Za-z0-9_-]{43,}={0,2}\Z'
+albums_svc_image_re: '^[^\s@]+@sha256:[0-9a-f]{64}\Z'
+
+# Правила полей владельца — те же, что у сервиса (internal/config/config.go: checkOwners, checkSite). Роль кладёт
+# albums_owners в config.json как есть, и роль мягче сервиса означает сервис, не стартующий у всех владельцев, —
+# уже после записи конфига. Расхождение с сервисом ловит deploy/tests/provision/owners_rule_static.py
+# (общий файл случаев internal/config/testdata/site_cases.json).
+# Поля владельца: неизвестный ключ (опечатка «sitе») сервис отвергает (DisallowUnknownFields).
+albums_svc_owner_keys: [slug, studio, site, quota_bytes, max_albums, tokens]
+albums_svc_token_keys: [name, sha256]
+# Предел quota_bytes (int64) и max_albums (int, 64 бита на amd64/arm64) в config.go: больше — json.Unmarshal сервиса
+# не разберёт число, и сервис не стартует.
+albums_svc_int64_max: 9223372036854775807
+# site: https, DNS-имя в ASCII (последняя метка с буквы — отсекает IP «127.1», «0x7f.1»), без пользователя, порта,
+# запроса и якоря, путь из безопасного набора. «\Z», а не «$»: тест regex — это re.search, и «$» пропустил бы
+# хвостовой перевод строки. Длина ≤ 200 байт и точечные сегменты — в albums_svc_site_dot_re и в assert.
+albums_svc_site_re: '^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?(/([A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?\Z'
+# Сегмент пути «.» или «..» (в том числе %2e в любом регистре): браузер его сворачивает, и href разошёлся бы со значением.
+albums_svc_site_dot_re: '(^|/)(\.|%2[eE]){1,2}(/|\Z)'
+# Подпись студии и имя токена — без «невидимых» знаков: Cc, Cf, Zl, Zp (config.go: hasInvisible). Набор сверен с
+# таблицей Go 1.27 (Unicode 17) вручную; owners_rule_static.py сверяет его только с unicodedata Python (Unicode 15).
+# При обновлении Go (toolchain в go.mod) — сверить заново.
+albums_svc_invisible_low: '\x00-\x1f\x7f-\x9f\xad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e'
+albums_svc_invisible_mid: '\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb'
+albums_svc_invisible_astral: '\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f'
+albums_svc_visible_re: '^[^{{ albums_svc_invisible_low }}{{ albums_svc_invisible_mid }}{{ albums_svc_invisible_astral }}]+\Z'
+
+# Содержимое /etc/subuid и /etc/subgid (задачи subid.yml) и строки других пользователей, пересекающиеся с диапазоном.
+albums_svc_subid_texts: "{{ albums_svc_subid_raw.results | map(attribute='content', default='') | map('b64decode') | list }}"
+albums_svc_subid_conflicts: >-
+  {%- set ns = namespace(bad=[]) -%}
+  {%- for text in albums_svc_subid_texts -%}
+  {%- for line in text.splitlines() -%}
+  {%- set p = line.split(':') -%}
+  {%- if p | length == 3 and p[0] != albums_svc_user and p[1] is regex('^[0-9]+$') and p[2] is regex('^[0-9]+$')
+      and (p[1] | int) <= albums_svc_sub_start | int + albums_svc_sub_count | int - 1
+      and albums_svc_sub_start | int <= (p[1] | int) + (p[2] | int) - 1 -%}
+  {%- set ns.bad = ns.bad + [p[0]] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.bad | to_json }}
+
+# Конфигурация сервиса (001 design §6); домен — только public_base.
+albums_svc_config:
+  listen: unix:/run/albums-svc/http.sock
+  trusted_proxy: ""
+  public_base: "https://{{ albums_domain }}"
+  data_dir: /data
+  secret_file: /run/secrets/albums_master
+  limits: "{{ albums_svc_limits }}"
+  accept_webp: "{{ albums_svc_accept_webp }}"
+  unpublished_ttl: "{{ albums_svc_unpublished_ttl }}"
+  disk_reserve_bytes: "{{ albums_svc_disk_reserve_bytes }}"
+  login: "{{ albums_svc_login }}"
+  owners: "{{ albums_owners }}"

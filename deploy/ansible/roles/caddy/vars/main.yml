@@ -1,0 +1,36 @@
+---
+# Внутренние значения роли (не настройки inventory); из inventory приходит только albums_domain (-e provision.sh).
+# Версия — ровно эта: заголовки Caddy менялись между версиями (стенд П1); исправление безопасности — правка здесь,
+# образа проверок deploy/tests/ и прогон caddy-validate.sh и stand.sh (design 002 §8).
+caddy_version: "2.11.7"
+# Основной ключ apt-репозитория Caddy (факт: design 002 §8); файл ключа сверяется по отпечатку, а не по имени.
+caddy_key_fingerprint: "65760C51EDEA2017CEA2CA15155B6D79CA56EA34"  # gitleaks:allow — публичный отпечаток ключа подписи репозитория Caddy (не секрет)
+
+# Артефакты берутся из deploy/ по пути от playbook_dir (design 002 §1): одна копия на стенд, CI и раскатку.
+caddy_key_src: "{{ playbook_dir }}/../caddy/caddy-stable-archive-keyring.asc"
+caddy_caddyfile_src: "{{ playbook_dir }}/../caddy/Caddyfile"
+caddy_dropin_src: "{{ playbook_dir }}/../systemd/caddy-albums.conf"
+caddy_notfound_src: "{{ playbook_dir }}/../../web/viewer/notfound.html"
+
+caddy_key_dest: /etc/apt/keyrings/caddy-stable.asc
+caddy_sources_dest: /etc/apt/sources.list.d/caddy-stable.sources
+caddy_prefs_dest: /etc/apt/preferences.d/caddy
+caddy_dir: /etc/caddy
+caddy_env_dest: /etc/caddy/albums.env
+caddy_dropin_dir: /etc/systemd/system/caddy.service.d
+caddy_dropin_dest: /etc/systemd/system/caddy.service.d/albums.conf
+caddy_errors_dir: /usr/share/albums-svc/errors
+caddy_policy_rc: /usr/sbin/policy-rc.d
+
+# Имя узла: строчные латинские, цифры и дефис; метки через точку. Идёт в Caddyfile (адрес сайта) и в config.json
+# сервиса (public_base), поэтому лишнее (пробел, перевод строки, кавычка, слэш, фигурные скобки) недопустимо.
+caddy_domain_re: '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?\Z'
+
+# Дом пользователя caddy: здесь Caddy хранит ACME-аккаунт и сертификаты (без дома TLS не поднимется).
+caddy_home: /var/lib/caddy
+# policy-rc.d на время установки: запрещает запуск служб; метка — по ней файл узнаётся как наш и снимается.
+caddy_policy_marker: "# sa-caddy-install"
+caddy_policy_content: "#!/bin/sh\n# sa-caddy-install\nexit 101\n"
+
+# Проверка Caddyfile (%s — временный файл модуля copy): домен — как в окружении юнита.
+caddy_validate_cmd: "/usr/bin/env ALBUMS_DOMAIN={{ albums_domain }} /usr/bin/caddy validate --adapter caddyfile --config %s"

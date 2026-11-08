@@ -1,0 +1,92 @@
+---
+# Проверки входа администратора: файлы запуска, разрешающий список содержимого дома, authorized_keys (решения Р-14,
+# Р-21, Р-22). Один файл на два места: конец site.yml (каждый configure: на настоящем сервере подмену иначе никто не
+# заметил бы, provision.sh запускает только bootstrap.yml и site.yml) и verify.yml (теги verify_users). Ничего не
+# меняют; нужны become и bootstrap_admin_home.
+# Файлы запуска администратора выполняются при каждом ssh-входе и sudo-оболочке: подмена PATH в ~/.bashrc
+# подсунула бы прогону поддельный python3 уже от root (при changed=0 это не видно). Допустимо только то, что
+# положил useradd из /etc/skel: .bashrc, .profile, .bash_logout — копии skel, .bash_profile и .bash_login нет
+# (или пусты), нет .ssh/rc, .ssh/environment и /etc/ssh/sshrc. Дополнительно interpreter_python в ansible.cfg
+# закреплён на /usr/bin/python3, чтобы PATH не выбирал интерпретатор.
+- name: "Проверка verify_users: файлы запуска администратора"
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - |
+        h=$1
+        for f in .bashrc .profile .bash_logout; do
+          if [ -L "$h/$f" ]; then echo "$f (симлинк)"
+          elif [ -e "$h/$f" ]; then
+            if [ -e "/etc/skel/$f" ]; then cmp -s "/etc/skel/$f" "$h/$f" || echo "$f (не совпадает с /etc/skel)"
+            else [ -s "$h/$f" ] && echo "$f (нет в /etc/skel, но не пуст)"; fi
+          fi
+        done
+        for f in .bash_profile .bash_login .bash_aliases .bash_completion; do
+          if [ -L "$h/$f" ] || [ -s "$h/$f" ]; then echo "$f (не должно быть)"; fi
+        done
+        for f in "$h/.ssh/rc" "$h/.ssh/environment" "$h/.pam_environment" "$h/bin" "$h/.local/bin" /etc/ssh/sshrc; do
+          if [ -e "$f" ] || [ -L "$f" ]; then echo "$f (не должно быть)"; fi
+        done
+        # Разрешающий список содержимого дома (то, что там лежит после bootstrap и site и после ручного входа): файлы
+        # из skel, служебное sudo, история оболочки и less, .ssh/authorized_keys, каталог временных файлов Ansible.
+        # Всё прочее (.config/bash_completion, .local, чужой файл) — отказ: запретным списком путей не охватить
+        # то, что читают оболочка и программы при входе.
+        # Любой симлинк в доме — отказ (кроме содержимого .ansible/tmp/ansible-tmp-*): find не идёт по ссылке, а сверка
+        # по имени пропустила бы .ssh или authorized_keys, ведущие наружу. Ошибка find (дома нет, нет прав) — тоже отказ,
+        # а не тихий успех: пустой вывод означал бы «всё в порядке».
+        if [ -L "$h" ]; then echo "(дом — симлинк)"; fi
+        nl=$(printf '\n.'); nl=${nl%.}
+        if [ -n "$(find "$h" -name "*$nl*" -print -quit)" ]; then echo "(в доме есть имя файла с переводом строки)"; fi
+        list=$(find "$h" -mindepth 1 -printf '%y %P\n') || echo "(find: ошибка чтения дома)"
+        printf '%s\n' "$list" | while IFS= read -r line; do
+          [ -n "$line" ] || continue
+          t=${line%% *}
+          f=${line#* }
+          case $f in .ansible/tmp/ansible-tmp-*) continue ;; esac
+          if [ "$t" = l ]; then echo "$f (симлинк)"; fi
+          case $f in
+            .bashrc | .profile | .bash_logout | .sudo_as_admin_successful | .bash_history | .lesshst) ;;
+            .ssh | .ssh/authorized_keys | .ansible | .ansible/tmp) ;;
+            *) echo "$f (не входит в разрешённый состав дома)" ;;
+          esac
+        done
+        exit 0
+      - sh
+      - "{{ bootstrap_admin_home }}"
+  register: bootstrap_startup_files
+  changed_when: false
+  tags: [verify_users]
+
+# authorized_keys администратора: ровно то, что кладёт роль (тип и ключ каждой строки), и никаких опций перед
+# ключом (command=, environment=, from= и прочее): запись с опциями сменила бы первые поля строки.
+- name: "Проверка verify_users: authorized_keys администратора"
+  ansible.builtin.slurp:
+    src: "{{ bootstrap_admin_home }}/.ssh/authorized_keys"
+  register: bootstrap_admin_keys_file
+  tags: [verify_users]
+
+- name: "Проверка verify_users: в authorized_keys администратора только заданные ключи, без опций"
+  ansible.builtin.assert:
+    that:
+      - bootstrap_keys_actual == bootstrap_keys_expected
+    quiet: true
+    fail_msg: >-
+      authorized_keys администратора отличается от admin_ssh_keys (лишняя запись или опции перед ключом:
+      command=, environment=, from= и прочее)
+  vars:
+    bootstrap_keys_actual: >-
+      {{ (bootstrap_admin_keys_file.content | b64decode).splitlines() | map('trim') | reject('equalto', '')
+      | reject('match', '^#') | map('regex_search', '^[^ ]+ [^ ]+') | list }}
+    bootstrap_keys_expected: >-
+      {{ admin_ssh_keys | map('trim') | map('regex_search', '^[^ ]+ [^ ]+') | list }}
+  tags: [verify_users]
+
+- name: "Проверка verify_users: администратор не подменяет окружение входа"
+  ansible.builtin.assert:
+    that: bootstrap_startup_files.stdout == ''
+    quiet: true
+    fail_msg: >-
+      файлы запуска администратора отличаются от /etc/skel или есть файлы, которые выполняются при входе
+      ({{ bootstrap_startup_files.stdout_lines | join('; ') }}): через них подменяют PATH и интерпретатор
+  tags: [verify_users]

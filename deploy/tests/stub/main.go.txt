@@ -1,0 +1,98 @@
+// Заглушка albums-svc для проверок развёртывания (И1, П1): слушает unix-сокет, как настоящий сервис, и
+// отвечает JSON с тем, что дошло от Caddy. Расширение .txt — чтобы `go build ./...` и линтеры её не видели:
+// это не код сервиса, а стендовый инструмент. Собирается скриптом socket-probe.sh.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"sort"
+	"strings"
+	"time"
+)
+
+const defaultSock = "/run/albums-svc/http.sock"
+
+func sockPath() string {
+	if p := os.Getenv("STUB_SOCK"); p != "" {
+		return p
+	}
+	return defaultSock
+}
+
+func health() int {
+	cl := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sockPath())
+		}},
+	}
+	resp, err := cl.Get("http://unix/v1/health")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
+func main() {
+	// Как у настоящего бинарника: -config <файл> и подкоманда health; конфиг заглушка не читает.
+	cfg := flag.String("config", "", "файл конфигурации (содержимое заглушке не нужно, но читаться он обязан)")
+	flag.Parse()
+	if flag.NArg() > 0 && flag.Arg(0) == "health" {
+		os.Exit(health())
+	}
+	// Как настоящий сервис: нет доступа к конфигу — выход ≠ 0 до открытия сокета (проверка прав в socket-probe.sh).
+	if _, err := os.ReadFile(*cfg); err != nil {
+		os.Stderr.WriteString("config: не прочитан\n")
+		os.Exit(1)
+	}
+
+	sock := sockPath()
+	_ = os.Remove(sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		os.Stderr.WriteString("listen: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+	if err := os.Chmod(sock, 0o660); err != nil {
+		os.Stderr.WriteString("chmod: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Как настоящий сервис, тело читаем до конца: предел тела на стороне Caddy срабатывает при чтении.
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, "read", http.StatusRequestEntityTooLarge)
+			return
+		}
+		hdr := map[string]string{}
+		var names []string
+		for k, v := range r.Header {
+			lk := strings.ToLower(k)
+			if strings.HasPrefix(lk, "x-sa-") || strings.HasPrefix(lk, "x-forwarded-") {
+				names = append(names, k)
+				hdr[k] = strings.Join(v, ",")
+			}
+		}
+		sort.Strings(names)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"stub": true, "method": r.Method, "uri": r.RequestURI, "uid": os.Getuid(), "gid": os.Getgid(),
+			"headers": hdr, "names": names,
+		})
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	if err := srv.Serve(ln); err != nil {
+		os.Exit(1)
+	}
+}
