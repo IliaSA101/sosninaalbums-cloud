@@ -1,0 +1,7 @@
+---
+# ansible-lint раскатки (запуск: run.sh ansible_lint). production — самый строгий профиль;
+# offline — без обращений к Galaxy и сети (проверка идёт в контейнере --network=none);
+# strict — предупреждения тоже провал (правило проекта: ноль warnings).
+profile: production
+offline: true
+strict: true

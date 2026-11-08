@@ -1,0 +1,7 @@
+---
+- name: Образец для проверки ansible-lint
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Проверка связи
+      ansible.builtin.ping:

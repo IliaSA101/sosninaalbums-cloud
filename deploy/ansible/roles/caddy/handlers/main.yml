@@ -1,0 +1,13 @@
+---
+# В Caddyfile `admin off`: перечитать настройки на ходу нельзя, поэтому restart (design 002 §8). Окружение и drop-in
+# юнита тоже требуют daemon-reload и перезапуска.
+- name: Перечитать юниты systemd (Caddy)
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: restart caddy
+
+- name: Перезапустить Caddy
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    state: restarted
+  listen: restart caddy

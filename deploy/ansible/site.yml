@@ -1,0 +1,44 @@
+---
+# Настройка сервера под администратором (design 002 §4): повторный запуск безопасен, второй прогон —
+# changed=0. Caddy — до albums_svc (tmpfiles ссылается на пользователя caddy), albums_svc — после podman;
+# теги albums-runtime — у задач, которым нужен rootless Podman и uid процесса сервиса (локальный стенд их
+# пропускает: --skip-tags albums-runtime).
+- name: Настройка сервера
+  hosts: all
+  remote_user: "{{ admin_user }}"
+  become: true
+  vars:
+    bootstrap_connect_user: "{{ admin_user }}"
+    # Соединение и sudo: аргументы ssh — те же, что у пробных входов роли; пароль sudo — из vault.
+    ansible_ssh_common_args: "{{ sa_ssh_args | map('quote') | join(' ') }}"
+    ansible_become_password: "{{ vault_admin_password }}"
+    # Пользователь образа удаляется здесь, а не в bootstrap.yml: прогон не должен убирать себя самого.
+    bootstrap_remove_image_user: true
+    # Ключи администратора уже поставлены bootstrap.yml: пришлось менять - их правили извне (Р-14).
+    bootstrap_keys_must_stay: true
+  roles:
+    - role: bootstrap
+    - role: nftables
+    - role: upgrades
+    - role: journald
+    - role: guest_agent
+    - role: cloud_init
+    - role: podman
+    - role: caddy
+    - role: albums_svc
+    - role: backup_access
+  post_tasks:
+    # Каждый configure кончается проверкой входа администратора: файлы запуска, состав дома, authorized_keys
+    # (подмена PATH или ключа с опциями иначе проходила бы незамеченной, Р-22).
+    - name: Вход администратора не подменён
+      ansible.builtin.include_role:
+        name: bootstrap
+        tasks_from: verify_admin.yml
+
+    # Слушатели вне lo — вторым рубежом после nftables, в каждом configure (спека 005, 005-25): раньше их проверял только
+    # стенд, и LLMNR на 5355 прошёл configure молча. Провал здесь означает, что сервис уже настроен, а учёт раскатки не
+    # записан (provision.sh пишет его после site.yml): порядок восстановления — deploy/README.md, «Слушатели».
+    - name: Слушатели вне lo только из списка
+      ansible.builtin.include_role:
+        name: nftables
+        tasks_from: listeners.yml

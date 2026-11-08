@@ -1,0 +1,41 @@
+---
+# LLMNR и mDNS выключены (спека 005, 005-11, 005-31). По умолчанию systemd-resolved слушает tcp/udp 5355 (LLMNR) на всех
+# адресах: на первой раскатке это нашёл `ss -tulnp`. nftables держит порт закрытым снаружи, но служба на 0.0.0.0 — это
+# правило «второго рубежа» (verify_listeners), а ни LLMNR, ни mDNS серверу не нужны.
+# Служба не установлена — drop-in безвреден (файл лежит), самопроверка пропускается.
+- name: Каталог drop-in systemd-resolved
+  ansible.builtin.file:
+    path: "{{ bootstrap_resolved_dropin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop-in systemd-resolved без LLMNR и mDNS
+  ansible.builtin.copy:
+    dest: "{{ bootstrap_resolved_dropin }}"
+    content: |
+      # Управляется Ansible (роль bootstrap). Имя 99-: побеждает последний файл по порядку имён.
+      [Resolve]
+      LLMNR=no
+      MulticastDNS=no
+    owner: root
+    group: root
+    mode: "0644"
+  register: bootstrap_resolved_dropin_result
+
+- name: Службы хоста (для проверки systemd-resolved)
+  ansible.builtin.service_facts:
+
+# Перезапуск ДО самопроверки: иначе первый configure видел бы старое состояние службы и падал на собственной правке.
+# Только при изменении drop-in — повторный прогон ничего не меняет.
+- name: Перезапуск systemd-resolved, чтобы drop-in вступил в силу
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    state: restarted
+  when:
+    - bootstrap_resolved_dropin_result is changed
+    - bootstrap_resolved_running | bool
+
+- name: Самопроверка systemd-resolved (LLMNR и mDNS выключены)
+  ansible.builtin.include_tasks: resolved_check.yml

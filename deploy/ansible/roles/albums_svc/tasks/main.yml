@@ -1,0 +1,25 @@
+---
+# Сервис листалок (design 002 §9): пользователь albums с диапазоном subuid, каталоги, config.json, tmpfiles и
+# Quadlet; задачи под тегом albums-runtime (rootless Podman и uid процесса сервиса) — в runtime.yml. Роль стоит
+# после caddy: tmpfiles ссылается на пользователя caddy (ACL на каталог сокета).
+- name: Проверки значений и состояния до изменений
+  ansible.builtin.include_tasks: assert.yml
+
+- name: Пользователь albums и его диапазон subuid
+  ansible.builtin.include_tasks: user.yml
+
+- name: Файлы сервиса
+  ansible.builtin.include_tasks: files.yml
+
+# Факты для задач ниже — с тегом albums-runtime: иначе `--tags albums-runtime` прошёл бы без них. Если пользователя
+# albums ещё нет, getent падает: сначала полный прогон.
+- name: Uid пользователя albums для задач albums-runtime
+  ansible.builtin.include_tasks:
+    file: facts.yml
+    apply:
+      tags: [albums-runtime]
+  tags: [albums-runtime]
+
+- name: Linger, ACL, данные, секрет, образ, юнит (albums-runtime)
+  ansible.builtin.import_tasks: runtime.yml
+  tags: [albums-runtime]

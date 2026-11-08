@@ -1,0 +1,13 @@
+---
+# Применение правил — reload (design §6). verify_nft_reload_only следит, чтобы в ролях не появилось
+# restarted/stopped для nftables: даже с пустым ExecStop (drop-in sa.conf) это не наш путь.
+- name: Перечитать nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: reloaded
+  listen: reload nftables
+
+- name: Перечитать юниты systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: reload systemd for nftables

@@ -1,0 +1,27 @@
+---
+# Журнал на диске ограниченного размера и срока — для разбора инцидента (design 002 §10). rsyslog не ставится:
+# вторая копия журнала жила бы без срока (verify_journald проверяет, что его нет).
+- name: Каталог постоянного журнала
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    owner: root
+    group: systemd-journal
+    mode: "2755"
+
+- name: Каталог настроек journald
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Настройки journald
+  ansible.builtin.template:
+    src: sa.conf.j2
+    dest: /etc/systemd/journald.conf.d/sa.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart journald

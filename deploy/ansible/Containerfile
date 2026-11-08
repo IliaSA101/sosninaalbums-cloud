@@ -1,0 +1,22 @@
+# Контроллер раскатки (спека 002, design §4): ansible, ansible-lint, yamllint и пакеты Debian age, zstd,
+# openssh-client, whois (mkpasswd для хэша пароля администратора). На хост ничего не ставится.
+# Сборка (provision.sh и стенд делают её сами, тег — от хэша этих файлов):
+#   podman build -f deploy/ansible/Containerfile deploy/ansible
+# База — по дайджесту индекса (Python 3.13, Debian 13) с mirror.gcr.io (зеркало Docker Hub от Google): из РФ слои
+# public.ecr.aws не скачиваются (ВР-16); дайджест тот же. Обновляется осознанно. pip — только из
+# requirements.txt с точными версиями и хэшами (--require-hashes: подмена пакета на PyPI не пройдёт);
+# --only-binary: исходники пакетов при установке не исполняются (setup.py); --no-deps: набор закреплён целиком.
+# Запуск — только `--read-only`, `--cap-drop=ALL`, `--log-driver=none` (design §2), tmpfs для HOME и ~/.ansible.
+FROM mirror.gcr.io/library/python@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+
+ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore \
+    DEBIAN_FRONTEND=noninteractive
+# Пакеты Debian — без версий: база закреплена дайджестом, apt берёт их из репозитория Debian 13 с его подписью
+# (то же доверие, что у самой базы), а age, zstd, openssh-client, whois — не код раскатки, а утилиты; закрепление
+# версий apt без снимка репозитория (snapshot.debian.org) ломало бы сборку при каждом обновлении безопасности.
+# Решение аудита: принято (М9).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends age zstd openssh-client whois \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --require-hashes --only-binary=:all: --no-deps -r /tmp/requirements.txt && rm /tmp/requirements.txt

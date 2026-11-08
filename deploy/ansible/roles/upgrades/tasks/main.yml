@@ -1,0 +1,33 @@
+---
+# Автообновления безопасности Debian (design 002 §10): только security-репозиторий Debian, перезагрузка
+# ночью. Прочие источники (в том числе Caddy из своего репозитория) unattended-upgrades не трогает.
+- name: Пакет unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Периодичность — раз в сутки
+  ansible.builtin.template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Источники и перезагрузка
+  ansible.builtin.template:
+    src: 52sa-unattended.j2
+    dest: /etc/apt/apt.conf.d/52sa-unattended
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Таймеры apt включены
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
