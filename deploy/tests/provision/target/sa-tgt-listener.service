@@ -1,0 +1,7 @@
+# Только стенд: слушатель на 8080 для verify_nft_ports (порт должен быть закрыт nftables снаружи, хотя
+# служба на нём слушает). Не включён: `run.sh listener on|off`.
+[Unit]
+Description=Слушатель 8080 для проверки nftables
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /var/empty

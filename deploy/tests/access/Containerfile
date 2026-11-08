@@ -1,0 +1,10 @@
+# Образ матрицы доступа: Python и зависимости pytest + httpx. На хост ничего не ставится.
+# Сборка (stand.sh up делает её сам): podman build -f deploy/tests/access/Containerfile deploy/tests/access
+# База — по дайджесту индекса (Python 3.13, Debian 13); обновляется осознанно. Пакеты — только из
+# requirements.txt с точными версиями и хэшами (--require-hashes: подмена пакета на PyPI не пройдёт).
+# Сами тесты в образ не входят: stand.sh монтирует каталог только для чтения.
+FROM docker.io/library/python@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+
+ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --require-hashes --no-deps -r /tmp/requirements.txt && rm /tmp/requirements.txt

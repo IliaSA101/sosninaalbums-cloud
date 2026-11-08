@@ -1,0 +1,48 @@
+---
+# Пример ~/inventory/ansible/group_vars/all/vars.yml (не секретное; значения выдуманные). Домен, имена
+# администратора и пользователя бэкапа provision.sh передаёт сам (-e) из provision.env. Роли И3 и И4
+# дополняют список своими переменными. Секрет сервиса vault_albums_master — в vault.yml.
+
+# Файл читается Ansible как Jinja — это код, а не данные: inventory правится только в сессии sa-ops ops-ВМ
+# или просматривается как код. Пароль для sudo задают плеи из vault_admin_password (vault.yml).
+
+# Открытые ключи администратора (authorized_key, exclusive). Нужен хотя бы один, и ключ сервера раскатки
+# (~/.ssh/id_server.pub) обязан быть в списке: иначе роль bootstrap откажется закрывать root.
+admin_ssh_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleAdminKeyNotARealKeyxxxxxxxxxxxxx sa-server"
+
+# Диапазон subuid/subgid пользователя albums: "<начало>:<число>", начало >= 100000, конец <= 524287,
+# число >= 65536; ни с чем не пересекается. Смена потом — chown данных (дорого).
+albums_subuid: "200000:65536"
+
+# Образ сервиса (albums_svc_image) здесь НЕ задаётся: его пишет `provision.sh image-verify` в ~/inventory/verified-image после
+# проверки аттестации, а `configure` передаёт в Ansible как -e (выше любого файла). Строка albums_svc_image в vars.yml или
+# host_vars — отказ configure (код 3). Улики и сверенные наборы лежат рядом: releases/vX.Y.Z/, sigstore/, actions-pins/, gh-image-id.
+
+# Владельцы (фотографы): слаг (в адрес не входит), студия, необязательный сайт студии, квота, число альбомов и токены
+# загрузки — только sha256 (сам токен выдаёт программа: albums-svc -gen-token, строка sha256 идёт сюда, токен —
+# владельцу). Ровно эти поля попадают в config.json сервиса; хэши токенов уникальны среди всех владельцев.
+# Роль отказывает ДО записи конфига, если правило нарушено (оно то же, что у сервиса, иначе сервис не стартовал бы):
+#  - ключи владельца — только slug, studio, site, quota_bytes, max_albums, tokens (опечатка в ключе — отказ);
+#  - запись токена — только name (1…64 знака без управляющих) и sha256; токен в открытом виде не принимается;
+#  - studio — 1…100 знаков без управляющих; site — https://имя.зона[/путь], ASCII (кириллица — punycode), до 200
+#    знаков, без порта, IP, запроса, якоря, пользователя и сегментов «.» и «..».
+#    Сайт не нужен — уберите строку site целиком: пустое значение (site: "", site:) не допускается.
+#  - quota_bytes и max_albums — положительные целые не больше 9223372036854775807.
+# site (ссылка на сайт студии в подписи листалки) добавлять ТОЛЬКО вместе с образом v0.1.2 (один configure): сервис
+# v0.1.1 поля не знает и не стартует. Откат на v0.1.1 — сначала убрать site и сделать configure.
+albums_owners:
+  - slug: p1
+    studio: Студия Пример
+    # site: https://studio.example
+    quota_bytes: 10737418240
+    max_albums: 500
+    tokens:
+      - name: ноутбук
+        sha256: "0000000000000000000000000000000000000000000000000000000000000001"
+
+# Забор копий: открытый ключ пользователя бэкапа (закрытый — ~/.ssh/id_backup раскатки) и открытый ключ age
+# владельца (закрытый — в файле секретов). Предел времени службы — по замеру на аренде.
+backup_ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBackupKeyNotARealKeyxxxxxxxxxxx sa-backup"
+backup_age_recipient: "age1qpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce"
+backup_runtime_max: "6h"

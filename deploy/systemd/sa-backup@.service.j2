@@ -1,0 +1,40 @@
+# /etc/systemd/system/sa-backup@.service (design 002 §11): чтение данных и конфига для копии одной способностью.
+# Файлы сервиса — 0600 uid процесса, ACL не помогает (маска нового файла берётся из режима), поэтому служба
+# получает CAP_DAC_READ_SEARCH; с ней она читает всё, что видит, а видит она только данные, конфиг и программы —
+# в пустом корне (TemporaryFileSystem=/:ro) нет ни /etc/shadow, ни ключей хоста, ни дома albums, ни /var/lib/caddy.
+# В Debian 13 /bin, /lib и /lib64 — симлинки в /usr; директивы юнита симлинков в пустом корне не создают,
+# поэтому те же каталоги привязываются по путям симлинков (интерпретатор ELF — /lib64/…, #!/bin/bash).
+# Путь в BindReadOnlyPaths без «-»: нет данных — служба падает сразу и явно, а не отдаёт пустую копию.
+[Unit]
+Description=Поток копии albums-svc (зашифрованный)
+
+[Service]
+DynamicUser=yes
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+TemporaryFileSystem=/:ro
+BindReadOnlyPaths=/usr /usr/bin:/bin /usr/lib:/lib /usr/lib64:/lib64 /etc/ld.so.cache /etc/sa-backup /etc/albums-svc /var/lib/albums-svc/data
+# Каталог метки и списка файлов: tmpfs, исчезает вместе с экземпляром.
+RuntimeDirectory=sa-backup-stream
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+# stdout — в сокет клиента (поток), stderr — только в журнал: иначе строка «sa-backup: tar code=…» и сообщения zstd и
+# age встали бы внутрь потока, и ни одна копия не расшифровалась бы.
+StandardOutput=socket
+StandardError=journal
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+RuntimeMaxSec={{ backup_runtime_max }}
+IOSchedulingClass=idle
+ExecStart=/usr/local/libexec/sa-backup-stream

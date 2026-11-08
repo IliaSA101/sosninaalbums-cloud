@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Поддельный curl для provision_cli (ВР-15): сети нет, архив провайдера и SHA256SUMS отдаются из файлов теста. Пишет
+# argv в $SHIM_LOG. FAKE_ZIP — файл «архива» (обязателен); FAKE_SUMS: ok (по умолчанию; хэш считается по FAKE_ZIP),
+# bad (чужой хэш у нужного имени), missing (нет строки с именем архива); FAKE_CURL_FAIL=1 — отказ как у curl -f (22).
+set -uo pipefail
+printf 'CURL %s\n' "$*" >>"$SHIM_LOG"
+out='' url=''
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+	case ${args[i]} in
+		-o) out=${args[i + 1]} ;;
+	esac
+	url=${args[i]}
+done
+[ "${FAKE_CURL_FAIL:-}" != 1 ] || exit 22
+# Окно Б проверки образа (ops/tools.sh): архив gh и checksums.txt выпуска — FAKE_GH_TGZ (FAKE_GH_SUMS=bad: чужой хэш);
+# action.yml закреплённого действия — FAKE_ACTION_YML (FAKE_ACTION_FAIL=1: 404).
+case " $* " in *" -w "*) printf '%s' "${FAKE_ACTION_CODE:-404}" && exit 0 ;; esac
+case $url in
+	*/gh_*_linux_amd64.tar.gz) cp -- "${FAKE_GH_TGZ:?}" "$out" && exit 0 || exit 2 ;;
+	*/gh_*_checksums.txt)
+		sum=$(sha256sum <"${FAKE_GH_TGZ:?}" | cut -d' ' -f1)
+		[ "${FAKE_GH_SUMS:-ok}" != bad ] || sum=$(printf '%064d' 0)
+		printf '%s  gh_%s_linux_amd64.tar.gz\n' "$sum" "$(basename -- "$url" | sed 's/^gh_\(.*\)_checksums.txt$/\1/')" >"$out"
+		exit 0
+		;;
+	https://raw.githubusercontent.com/actions/*)
+		[ "${FAKE_ACTION_FAIL:-}" != 1 ] || exit 22
+		cp -- "${FAKE_ACTION_YML:?}" "$out" && exit 0 || exit 2
+		;;
+esac
+[ -n "$out" ] && [ -n "${FAKE_ZIP:-}" ] || exit 2
+base=${url##*/}
+case $base in
+	*_SHA256SUMS)
+		name=${base%_SHA256SUMS}_linux_amd64.zip
+		sum=$(sha256sum <"$FAKE_ZIP" | cut -d' ' -f1)
+		case ${FAKE_SUMS:-ok} in
+			bad) sum=$(printf '%064d' 0) ;;
+			missing) name=terraform-provider-other_linux_arm64.zip ;;
+		esac
+		printf '%s  %s\n%s  %s\n' "$(printf '%064d' 1)" "${base%_SHA256SUMS}_linux_arm64.zip" "$sum" "$name" >"$out"
+		;;
+	*.zip) cp -- "$FAKE_ZIP" "$out" ;;
+	*) exit 3 ;;
+esac
+exit 0

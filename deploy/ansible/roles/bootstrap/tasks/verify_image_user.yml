@@ -1,0 +1,43 @@
+---
+# Пользователь образа: после bootstrap.yml заблокирован (verify_image_user_state=locked, по умолчанию),
+# после site.yml удалён (absent) — design 002 §7, критерий verify_users.
+- name: "Проверка verify_users: пользователь образа, ожидаемое состояние"
+  ansible.builtin.assert:
+    that: verify_image_user_state | default('absent') in ['locked', 'absent']
+    quiet: true
+  tags: [verify_users]
+
+- name: "Проверка verify_users: пользователь образа удалён"
+  ansible.builtin.assert:
+    that: ansible_facts.getent_passwd[bootstrap_image_user] is none
+    quiet: true
+    fail_msg: пользователь образа ещё есть в passwd после site.yml
+  when: verify_image_user_state | default('absent') == 'absent'
+  tags: [verify_users]
+
+- name: "Проверка verify_users: пользователь образа заблокирован"
+  when: verify_image_user_state | default('absent') == 'locked'
+  tags: [verify_users]
+  block:
+    - name: "Проверка verify_users: состояние пароля пользователя образа"
+      ansible.builtin.command:
+        argv: [passwd, -S, "{{ bootstrap_image_user }}"]
+      register: bootstrap_image_status
+      changed_when: false
+
+    - name: "Проверка verify_users: следы входа пользователя образа"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ ansible_facts.getent_passwd[bootstrap_image_user][4] }}/.ssh/authorized_keys"
+        - /etc/sudoers.d/90-cloud-init-users
+      register: bootstrap_image_traces
+
+    - name: "Проверка verify_users: пароль заблокирован, оболочка nologin, ни ключей, ни sudoers"
+      ansible.builtin.assert:
+        that:
+          - (bootstrap_image_status.stdout.split())[1] in ['L', 'LK']
+          - ansible_facts.getent_passwd[bootstrap_image_user][5] == '/usr/sbin/nologin'
+          - bootstrap_image_traces.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+        fail_msg: пользователь образа не заблокирован до конца (design §7)

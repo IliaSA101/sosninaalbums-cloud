@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Шаблон html/template: форма входа в альбом с паролем (401 на /a/<id>/, 429 после частых неудач). Подстановки:
+     .Assets (как в index.html), .Studio (подпись студии), .Message («Неверный пароль», «Слишком много попыток»
+     или пусто). Названия альбома здесь нет. Форма уходит на login относительно /a/<id>/ — тот же источник
+     (CSP form-action 'self'). Пароль не хранится ни в адресе, ни в localStorage: обычный POST. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Вход{{if .Studio}} · {{.Studio}}{{end}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="{{.Assets}}icon.svg">
+<link rel="stylesheet" href="{{.Assets}}viewer.css">
+</head>
+<body class="plain">
+<main class="card">
+  {{if .Studio}}<p class="card-studio">{{.Studio}}</p>{{end}}
+  <h1 class="card-title">Альбом защищён паролем</h1>
+  <form method="post" action="login">
+    <label class="field-label" for="password">Пароль</label>
+    <input id="password" class="field" name="password" type="password" required autofocus
+      autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
+    {{if .Message}}<p class="card-error" role="alert">{{.Message}}</p>{{end}}
+    <button class="submit" type="submit">Открыть</button>
+  </form>
+</main>
+</body>
+</html>

@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Шаблон html/template: страницу альбома /a/<id>/ отдаёт сервис. Подстановки: .Assets — префикс каталога
+     листалки с хэшем содержимого («/viewer/<хэш>/»), .Studio — подпись студии из конфига. Название альбома сюда
+     не попадает: его рисует app.js из manifest.json (боты и предпросмотр ссылок не получают ПД). -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Альбом{{if .Studio}} · {{.Studio}}{{end}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="{{.Assets}}icon.svg">
+<link rel="stylesheet" href="{{.Assets}}viewer.css">
+<link rel="stylesheet" href="{{.Assets}}vendor/page-flip-2.0.7.css">
+</head>
+<body class="viewer">
+<header class="bar">
+  <h1 id="title" class="bar-title"></h1>
+  <p id="studio" class="bar-studio"></p>
+</header>
+<main id="stage" class="stage">
+  <p id="status" class="status" role="status">Загружаем альбом…</p>
+  <noscript><p class="status">Для просмотра альбома нужен JavaScript.</p></noscript>
+</main>
+<footer class="controls">
+  <button id="prev" class="nav" type="button" aria-label="Назад" disabled>&#8249;</button>
+  <span id="counter" class="counter" aria-live="polite"></span>
+  <button id="next" class="nav" type="button" aria-label="Вперёд" disabled>&#8250;</button>
+</footer>
+<script type="module" src="{{.Assets}}app.js"></script>
+</body>
+</html>

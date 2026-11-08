@@ -1,0 +1,52 @@
+---
+# Правила nftables (design 002 §6): открыты tcp 22, 80, 443; всё остальное на всех интерфейсах закрыто.
+# Подбор SSH ограничивают средства sshd (PerSourcePenalties, MaxStartups), счётчиков в nft нет.
+- name: Пакет nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ExecStop юнита в Debian — `nft flush ruleset`; пустой ExecStop= убирает его: остановка или перезапуск юнита
+# (по ошибке, обновлением пакета, systemctl restart) не оставляет хост без фильтра.
+- name: Каталог drop-in юнита nftables
+  ansible.builtin.file:
+    path: /etc/systemd/system/nftables.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop-in юнита nftables (без сброса правил при остановке)
+  ansible.builtin.template:
+    src: nftables.service.d.conf.j2
+    dest: /etc/systemd/system/nftables.service.d/sa.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload systemd for nftables
+
+- name: Юниты перечитаны до запуска службы
+  ansible.builtin.meta: flush_handlers
+
+- name: Правила /etc/nftables.conf
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: reload nftables
+
+# started, а не reload: на неактивном юните reload не работает. Включён — переживает перезагрузку.
+- name: Служба nftables включена и запущена
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+    state: started
+
+# Правила действуют сразу, а не в конце плея: дальнейшие задачи и проверки идут уже под фильтром.
+- name: Применение правил до следующих ролей
+  ansible.builtin.meta: flush_handlers

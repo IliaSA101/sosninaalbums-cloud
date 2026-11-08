@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Поддельный tofu для provision_cli: пишет argv, проверяет, что токен дошёл (через tofu-entry.sh), отдаёт
+# заготовленные state (многострочный JSON, как настоящий), планы (plan -out, show -json) и output. FAKE_STATE_LEAK=1 — в state попал private_key.
+# shellcheck source-path=SCRIPTDIR
+set -uo pipefail
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../fixtures/values.env
+. "$here/../fixtures/values.env"
+printf 'TOFU %s\n' "$*" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+case ${1:-} in
+	init)
+		if [ "${FAKE_INIT_FAIL:-}" = 1 ]; then
+			echo "shim: init не прошёл (FAKE_INIT_FAIL)" >&2
+			exit 1
+		fi
+		# Настоящий init создаёт TF_DATA_DIR (/state/.terraform-clo): туда потом ляжет сохранённый план.
+		mkdir -p "${SHIM_STATE:?}/.terraform-clo"
+		# -plugin-dir=/state/…: архив провайдера обязан уже лежать в зеркале (packed layout), как у настоящего init.
+		for a in "$@"; do
+			case $a in
+				-plugin-dir=/state/*)
+					if compgen -G "${SHIM_STATE:-/nonexistent}/${a#-plugin-dir=/state/}/registry.opentofu.org/*/*/terraform-provider-*.zip" >/dev/null; then
+						echo "MIRROR-PRESENT" >>"$SHIM_LOG"
+					else echo "MIRROR-MISSING" >>"$SHIM_LOG"; fi
+					;;
+			esac
+		done
+		;;
+	validate)
+		# Без файла-тома секрета: validate идёт мимо tofu-entry.sh; провайдер, не совпавший с lock, настоящий tofu отвергает здесь.
+		[ -z "${TF_VAR_clo_api_token:-}" ] || echo "TOFU-SECRET-IN-VALIDATE" >>"$SHIM_LOG"
+		if [ "${FAKE_VALIDATE_FAIL:-}" = 1 ]; then
+			echo "shim: validate не прошёл (FAKE_VALIDATE_FAIL)" >&2
+			exit 1
+		fi
+		;;
+	plan)
+		# plan -out=/state/…: файл плана появляется в томе state; токен дошёл через tofu-entry.sh. Содержимое файла — не токен.
+		if [ "${TF_VAR_clo_api_token:-}" = "$MARKER" ]; then echo "TOFU-TOKEN-OK" >>"$SHIM_LOG"; else echo "TOFU-TOKEN-MISSING" >>"$SHIM_LOG"; fi
+		if [ "${FAKE_PLAN_FAIL:-}" = 1 ]; then
+			echo "shim: plan не прошёл (FAKE_PLAN_FAIL)" >&2
+			exit 1
+		fi
+		for a in "$@"; do
+			case $a in -out=/state/*) printf 'FAKE-PLAN-FILE\n' >"${SHIM_STATE:?}/${a#-out=/state/}" ;; esac
+		done
+		;;
+	apply)
+		if [ "${TF_VAR_clo_api_token:-}" = "$MARKER" ]; then echo "TOFU-TOKEN-OK" >>"$SHIM_LOG"; else echo "TOFU-TOKEN-MISSING" >>"$SHIM_LOG"; fi
+		# Как настоящий tofu: сохранённый план применяется без -var-file и -replace (они уже в плане) и только если файл есть.
+		plan_arg=''
+		for a in "$@"; do
+			case $a in
+				-var-file* | -replace*)
+					echo "shim: с сохранённым планом нельзя $a" >&2
+					exit 1
+					;;
+				/state/*) plan_arg=$a ;;
+			esac
+		done
+		if [ -z "$plan_arg" ] || [ ! -f "${SHIM_STATE:?}/${plan_arg#/state/}" ]; then
+			echo "TOFU-APPLY-NO-PLAN" >>"$SHIM_LOG"
+			echo "shim: apply без сохранённого плана" >&2
+			exit 1
+		fi
+		echo "TOFU-APPLY-SAVED-PLAN" >>"$SHIM_LOG"
+		[ "${FAKE_APPLY_FAIL:-}" != 1 ] || exit 1
+		;;
+	show)
+		# show [-json] <план в /state>: план; без файла — состояние. FAKE_PLAN_JSON и FAKE_STATE_JSON — готовые файлы
+		# (cli/plan_fixtures.py), ими тест подставляет нужный вывод.
+		plan_arg=''
+		json=0
+		for a in "$@"; do
+			case $a in -json) json=1 ;; /state/*) plan_arg=$a ;; esac
+		done
+		if [ -n "$plan_arg" ]; then
+			if [ "$json" = 0 ]; then
+				echo "OpenTofu will perform the following actions: (shim)"
+				# FAKE_PLAN_TAMPER=1 — файл плана меняется после показа (подмена между проверкой и apply: сверка sha256).
+				[ "${FAKE_PLAN_TAMPER:-}" != 1 ] || printf 'TAMPERED\n' >>"${SHIM_STATE:?}/${plan_arg#/state/}"
+			elif [ -n "${FAKE_PLAN_JSON:-}" ]; then
+				cat -- "$FAKE_PLAN_JSON"
+			else
+				# План по умолчанию: ничего не удаляется; в состоянии (ниже) только ключ.
+				cat <<EOF
+{"format_version":"1.2","prior_state":{"format_version":"1.0","values":{"root_module":{"resources":[{"address":"clo_compute_keypair.admin","type":"clo_compute_keypair"}]}}},"resource_changes":[{"address":"clo_compute_instance.srv","type":"clo_compute_instance","change":{"actions":["create"]}}]}
+EOF
+			fi
+			exit 0
+		fi
+		if [ -n "${FAKE_STATE_JSON:-}" ]; then
+			cat -- "$FAKE_STATE_JSON"
+			exit 0
+		fi
+		if [ "${FAKE_STATE_LEAK:-}" = 1 ]; then leak='"private_key": "abc",'; else leak='"public_key": "ssh-ed25519 AAAA",'; fi
+		cat <<EOF
+{
+  "format_version": "1.0",
+  "values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "clo_compute_keypair.admin",
+          "type": "clo_compute_keypair",
+          "values": {
+            $leak
+            "name": "example"
+          }
+        }
+      ]
+    }
+  }
+}
+EOF
+		;;
+	output)
+		# Адрес сервера — константа теста вне служебных диапазонов hosts_check_ip (на lo контейнера, cli/inner_start.sh).
+		# FAKE_NO_OUTPUT=1 — в state нет адреса (apply оборвался до создания сервера): output -raw завершается ошибкой.
+		# FAKE_OUTPUT_FAIL=1 — сам tofu сломался (любой output завершается ошибкой), это не «нет адреса».
+		if [ "${FAKE_OUTPUT_FAIL:-}" = 1 ]; then
+			echo "shim: output не прошёл (FAKE_OUTPUT_FAIL)" >&2
+			exit 1
+		fi
+		if [ "${FAKE_NO_OUTPUT:-}" = 1 ]; then
+			# `output -json` без выходов в state — пустой объект и код 0; `-raw ipv4` — ошибка.
+			if [ "${2:-}" = -json ] && [ -z "${3:-}" ]; then
+				echo "{}"
+				exit 0
+			fi
+			echo "shim: output ipv4 нет в state (FAKE_NO_OUTPUT)" >&2
+			exit 1
+		fi
+		# Выход есть, но -raw не проходит (FAKE_OUTPUT_RAW_FAIL=1), а -json показывает ipv4.
+		if [ "${2:-}" = -json ]; then
+			printf '{\n  "ipv4": {\n    "value": "%s"\n  }\n}\n' "${FAKE_IP:-$CLI_IP}"
+			exit 0
+		fi
+		if [ "${FAKE_OUTPUT_RAW_FAIL:-}" = 1 ]; then exit 1; fi
+		if [ "${2:-}" = -raw ] && [ "${3:-}" = ipv4 ]; then printf '%s' "${FAKE_IP:-$CLI_IP}"; fi
+		;;
+esac
+exit 0

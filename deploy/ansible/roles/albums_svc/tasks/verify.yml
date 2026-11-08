@@ -1,0 +1,166 @@
+---
+# Проверки роли (design 002 §9, §12), ничего не меняют. verify_albums — без rootless Podman и uid процесса
+# сервиса (идёт и на локальном стенде): пользователь, subuid, файлы, tmpfiles, каталог сокета. verify_acl —
+# ACL и доступ процесса сервиса и Caddy к конфигу: нужен uid начало + 65531, поэтому только в CI (rootful-цель).
+- name: "Проверка verify_albums: запись пользователя albums"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ albums_svc_user }}"
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: shadow и группы albums"
+  ansible.builtin.getent:
+    database: shadow
+    key: "{{ albums_svc_user }}"
+  register: albums_svc_shadow
+  no_log: true
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: группы пользователя albums"
+  ansible.builtin.command:
+    argv: [id, -nG, "{{ albums_svc_user }}"]
+  register: albums_svc_groups
+  changed_when: false
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: группа albums"
+  ansible.builtin.getent:
+    database: group
+    key: "{{ albums_svc_user }}"
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: subuid и subgid"
+  ansible.builtin.include_tasks: subid.yml
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: пользователь без входа, без доп. групп, группа пуста, subuid ровно по inventory"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd[albums_svc_user][4] == albums_svc_home
+      - ansible_facts.getent_passwd[albums_svc_user][5] == '/usr/sbin/nologin'
+      - albums_svc_shadow.ansible_facts.getent_shadow[albums_svc_user][0] == '*'
+      - albums_svc_groups.stdout.split() == [albums_svc_user]
+      - ansible_facts.getent_group[albums_svc_user][2] == ''
+      - albums_svc_subid_texts | length == 2
+      - albums_svc_subid_texts | map('regex_findall', '(?m)^' ~ albums_svc_user ~ ':.*$') | map('length') | unique | list == [1]
+      - albums_svc_subid_texts | map('regex_findall', '(?m)^' ~ albums_svc_user ~ ':' ~ albums_svc_sub_start ~ ':'
+        ~ albums_svc_sub_count ~ '$') | map('length') | unique | list == [1]
+      - albums_svc_subid_conflicts | from_json | length == 0
+    quiet: true
+    fail_msg: albums не как в design §9 (оболочка, пароль, группы, subuid/subgid, пересечение диапазона с другим пользователем)
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: каталоги, конфиг, tmpfiles, Quadlet (checksum, владелец, права)"
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    checksum_algorithm: sha256
+  register: albums_svc_files
+  loop:
+    - {path: "{{ albums_svc_home }}", owner: "{{ albums_svc_user }}", group: "{{ albums_svc_user }}", mode: "0700", dir: true}
+    - {path: "{{ albums_svc_conf_dir }}", owner: root, group: "{{ albums_svc_user }}", mode: "0750", dir: true}
+    - {path: "{{ albums_svc_state_dir }}", owner: root, group: root, mode: "0755", dir: true}
+    - {path: "{{ albums_svc_quadlet_dir }}", owner: "{{ albums_svc_user }}", group: "{{ albums_svc_user }}", mode: "0700", dir: true}
+    - path: "{{ albums_svc_conf_file }}"
+      owner: root
+      group: "{{ albums_svc_user }}"
+      mode: "0640"
+      sum: "{{ lookup('ansible.builtin.template', 'config.json.j2') | hash('sha256') }}"
+    - path: "{{ albums_svc_tmpfiles_dest }}"
+      owner: root
+      group: root
+      mode: "0644"
+      sum: "{{ lookup('ansible.builtin.file', albums_svc_tmpfiles_src, rstrip=false) | hash('sha256') }}"
+    - path: "{{ albums_svc_quadlet_file }}"
+      owner: "{{ albums_svc_user }}"
+      group: "{{ albums_svc_user }}"
+      mode: "0644"
+      sum: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/../quadlet/albums-svc.container.j2') | hash('sha256') }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: содержимое и права совпадают с репозиторием раскатки"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir if (item.item.dir | default(false)) else item.stat.isreg
+      - item.stat.pw_name == item.item.owner
+      - item.stat.gr_name == item.item.group
+      - item.stat.mode == item.item.mode
+      - item.item.sum is not defined or item.stat.checksum == item.item.sum
+    quiet: true
+    fail_msg: "{{ item.item.path }}: содержимое, владелец или права расходятся с design §5, §9"
+  loop: "{{ albums_svc_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: каталог сокета /run/albums-svc"
+  ansible.builtin.stat:
+    path: /run/albums-svc
+  register: albums_svc_run_stat
+  tags: [verify_albums]
+
+- name: "Проверка verify_albums: ACL каталога сокета"
+  ansible.builtin.command:
+    argv: [getfacl, --absolute-names, --omit-header, /run/albums-svc]
+  register: albums_svc_run_acl
+  changed_when: false
+  tags: [verify_albums]
+
+# Владелец после старта сервиса — uid процесса (ExecStartPre меняет его, ACL сохраняется); до старта — albums.
+- name: "Проверка verify_albums: каталог сокета 0750, Caddy — только проход и запись сокета, остальным закрыто"
+  ansible.builtin.assert:
+    that:
+      - albums_svc_run_stat.stat.isdir
+      - albums_svc_run_stat.stat.mode == '0750'
+      - albums_svc_run_stat.stat.uid in [albums_svc_host_uid | int, albums_svc_proc_uid | int]
+      - "'user:caddy:--x' in albums_svc_run_acl.stdout_lines"
+      - "'default:user:caddy:rw-' in albums_svc_run_acl.stdout_lines"
+      - "'other::---' in albums_svc_run_acl.stdout_lines"
+      - albums_svc_run_acl.stdout_lines | select('match', '^user:[^:]') | list | length == 1
+    quiet: true
+    fail_msg: /run/albums-svc расходится с deploy/systemd/albums-svc.tmpfiles.conf (права, ACL для Caddy)
+  tags: [verify_albums]
+
+# --- verify_acl (CI): нужен uid процесса сервиса ---
+- name: "Проверка verify_acl: ACL каталога и файла конфигурации"
+  ansible.builtin.command:
+    argv: [getfacl, --absolute-names, --omit-header, "{{ item }}"]
+  register: albums_svc_acl_out
+  loop: ["{{ albums_svc_conf_dir }}", "{{ albums_svc_conf_file }}"]
+  changed_when: false
+  tags: [verify_acl]
+
+- name: "Проверка verify_acl: процесс сервиса читает конфиг (по ACL, не по группе), Caddy и остальные — нет"
+  ansible.builtin.command:
+    argv:
+      - setpriv
+      - "--reuid={{ item.uid }}"
+      - "--regid={{ item.gid }}"
+      - --clear-groups
+      - sh
+      - -c
+      - 'cat "$0" >/dev/null'
+      - "{{ albums_svc_conf_file }}"
+  register: albums_svc_read
+  loop:
+    - {who: сервис, uid: "{{ albums_svc_proc_uid }}", gid: "{{ albums_svc_proc_gid }}", ok: true}
+    - {who: caddy, uid: caddy, gid: caddy, ok: false}
+    - {who: albums, uid: "{{ albums_svc_user }}", gid: nogroup, ok: false}
+  loop_control:
+    label: "{{ item.who }}"
+  changed_when: false
+  failed_when: (albums_svc_read.rc | default(1) == 0) != item.ok
+  tags: [verify_acl]
+
+- name: "Проверка verify_acl: записи ACL"
+  ansible.builtin.assert:
+    that:
+      - ('user:' ~ albums_svc_proc_uid ~ ':r-x') in albums_svc_acl_out.results[0].stdout_lines
+      - ('default:user:' ~ albums_svc_proc_uid ~ ':r--') in albums_svc_acl_out.results[0].stdout_lines
+      - ('user:' ~ albums_svc_proc_uid ~ ':r--') in albums_svc_acl_out.results[1].stdout_lines
+      - albums_svc_acl_out.results | map(attribute='stdout') | join('\n') is not search('caddy')
+    quiet: true
+    fail_msg: ACL конфигурации не такие, как в design §9 (процесс сервиса — читает, Caddy — нет)
+  tags: [verify_acl]
