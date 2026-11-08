@@ -83,6 +83,7 @@ def check(s: sa.Snap, kind: str, a: Album, addr: str) -> None:
         if addr in ("index", "login_post"):  # форма входа: подпись студии, без названия альбома
             assert s.one("content-type") == HTML and s.one("content-security-policy") == checks.HTML_CSP
             assert b'name="password"' in s.body and a.book.manifest["title"].encode() not in s.body
+            assert sa.SITE1.encode() not in s.body, "сайт студии — только в view.json после входа, не в форме (005-2)"
         else:
             assert s.body == b"" and s.one("content-type") == "text/plain; charset=utf-8"
             assert s.one("content-security-policy") == checks.SANDBOX_CSP
@@ -92,6 +93,7 @@ def check(s: sa.Snap, kind: str, a: Album, addr: str) -> None:
         assert s.one("cache-control") == checks.CACHE_PAGE
         assert a.book.manifest["title"] not in text, "название альбома в HTML до скрипта"
         assert "og:image" not in text and "<b>x</b>" not in text
+        assert sa.SITE1 not in text, "сайт студии — только в view.json, не в HTML страницы (005-2)"
     elif addr == "manifest":
         assert s.one("content-type") == "application/json" and s.one("content-security-policy") == checks.SANDBOX_CSP
         assert s.one("cache-control") == checks.CACHE_PAGE
@@ -99,8 +101,10 @@ def check(s: sa.Snap, kind: str, a: Album, addr: str) -> None:
         assert man["title"] == a.book.manifest["title"] and not {"password", "expires_at", "token"} & set(man)
         assert [p["file"] for p in man["pages"] if not p.get("blank")] == a.book.files, "файлы манифеста не те, что загружены"
     elif addr == "view":
-        studio = STUDIO2 if a.owner is sa_api.OWNER2 else sa.STUDIO1
-        assert json.loads(s.body) == {"studio": studio} and s.one("cache-control") == checks.CACHE_PAGE
+        # Владелец с сайтом (стенд-a) отдаёт {studio, site}, без сайта (стенд-b) — прежние байты {studio} (спека 005).
+        want = {"studio": STUDIO2} if a.owner is sa_api.OWNER2 else {"studio": sa.STUDIO1, "site": sa.SITE1}
+        assert json.loads(s.body) == want and s.one("cache-control") == checks.CACHE_PAGE
+        assert (b'"site"' in s.body) == ("site" in want)
     elif addr in ("file", "file3"):
         n = 1 if addr == "file" else 3
         assert s.body == a.book.images[n] and s.one("content-type") == "image/jpeg"

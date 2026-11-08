@@ -39,6 +39,7 @@ def seed() -> None:
     print(f"2) с паролем:   {link(locked.id)}   пароль: {PASSWORD}")
     print(f"3) для правки:  {link(editable.id)}   (правка: bash deploy/tests/stand.sh edit, затем обновить страницу)")
     print(f"подпись студии владельца (в конфиге стенда, с разметкой): {sa.STUDIO1}")
+    print(f"сайт студии владельца (view.json; подпись в листалке — ссылка): {sa.SITE1}")
 
 
 def edit() -> None:

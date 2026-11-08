@@ -4,8 +4,10 @@
 # База — по дайджесту индекса (та же, что у цели стенда); обновляется осознанно.
 FROM public.ecr.aws/docker/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
 
+# locales + en_US.UTF-8 — проверка адреса hosts под UTF-8-локалью, где `[0-9]` принимает не-ASCII цифры (inner_hosts.sh).
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash git openssh-client age zstd tar util-linux less python3 procps ca-certificates \
+    && apt-get install -y --no-install-recommends bash git openssh-client age zstd tar util-linux less python3 procps ca-certificates locales \
+    && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash saops

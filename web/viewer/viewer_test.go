@@ -14,10 +14,6 @@ import (
 
 const prefix = "/viewer/abcd1234/"
 
-// Единственная разрешённая внешняя ссылка: «Исходный код» (AGPL-3.0 §13). Это переход по клику, не загрузка
-// ресурса; форк меняет адрес в самих шаблонах.
-const sourceLink = `<a href="https://github.com/IliaSA101/sosninaalbums-cloud" rel="noopener noreferrer">Исходный код</a>`
-
 func render(t *testing.T, name string, data PageData) string {
 	t.Helper()
 	tpl, err := template.ParseFS(Pages, name)
@@ -49,12 +45,9 @@ func TestTemplatesEscapeAndNoPD(t *testing.T) {
 				t.Errorf("%s: нет %s", name, want)
 			}
 		}
-		if strings.Count(out, sourceLink) != 1 {
-			t.Errorf("%s: ссылка «Исходный код» должна быть ровно одна", name)
-		}
-		rest := strings.Replace(out, sourceLink, "", 1) // остальное — без единого внешнего адреса
-		for _, bad := range []string{"og:", "twitter:", "<style", "style=", "http://", "https://", "<iframe", "<img"} {
-			if strings.Contains(rest, bad) {
+		// Внешних адресов в шаблонах нет вовсе (005-6): ссылку студии рисует листалка из view.json.
+		for _, bad := range []string{"og:", "twitter:", "<style", "style=", "http://", "https://", "<iframe", "<img", "<a ", "Исходный код"} {
+			if strings.Contains(out, bad) {
 				t.Errorf("%s: нашлось %q", name, bad)
 			}
 		}
@@ -98,12 +91,8 @@ func TestNotFoundStatic(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	if strings.Count(s, sourceLink) != 1 {
-		t.Error("notfound.html: ссылка «Исходный код» должна быть ровно одна")
-	}
-	rest := strings.Replace(s, sourceLink, "", 1)
-	for _, bad := range []string{"{{", "<script", "<link", "<style", "src=", "href=", "http://", "https://"} {
-		if strings.Contains(rest, bad) {
+	for _, bad := range []string{"{{", "<script", "<link", "<style", "src=", "href=", "http://", "https://", "<a ", "Исходный код"} {
+		if strings.Contains(s, bad) {
 			t.Errorf("notfound.html: нашлось %q", bad)
 		}
 	}

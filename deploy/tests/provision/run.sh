@@ -11,12 +11,13 @@
 #   bash deploy/tests/provision/run.sh static [шаг]      проверки без цели (все или один; шаги — ниже)
 #   bash deploy/tests/provision/run.sh <шаг>             шаг на поднятой цели (converge, verify; по одному за запуск)
 #
-# Шаги static: tofu_fmt tofu_validate tofu_test tofu_static ansible_lint yamllint syntax_check shellcheck selftest
+# Шаги static: tofu_fmt tofu_validate tofu_test tofu_static tofu_plan_label (токен-метка не в файле плана) ansible_lint yamllint syntax_check shellcheck selftest
 # provision_cli ctl_shared (запуск контроллера собирается одним кодом ops/ctl-run.sh для provision.sh и стенда),
 # workflow_guard_bypass workflow_static release_gate_cases image_composition stand_archive_mode release_publish_cases
 # runner_check_cases ghcr_probe_cases (выпуск образа и проба сети до реестра, спека 004: release_static.sh, тесты — deploy/tests/release), image_verify (проверка образа
 # на настоящем gh без сети; нужен архив gh в .gotmp/provision/gh/, в CI его отсутствие — провал, иначе SKIP) и actions_pins
-# (сверка закреплённых действий; спека 004, design §12).
+# (сверка закреплённых действий; спека 004, design §12), owners_rule (правила полей владельца в роли albums_svc
+# совпадают с сервисом: регэксп site, неизвестные ключи, записи токена; спека 005, owners_static.sh).
 # Каждый можно запустить отдельно: `run.sh yamllint`. Чего ещё нет в дереве (deploy/tofu, deploy/ansible) —
 # SKIP с причиной; появилось — шаг обязателен. Код выхода 1, если упал хоть один.
 # Шаги на цели (нужен `up`; идут по порядку; сети провайдера нет, плеи — в контейнере контроллера):
@@ -37,6 +38,7 @@
 # Ключ стенда и known_hosts — в каталоге ключей, не в репозитории и не в выводе; ключ только для цели.
 # shellcheck source-path=SCRIPTDIR
 set -uo pipefail
+export PYTHONDONTWRITEBYTECODE=1 # python на дереве (pty_drive, тесты) не оставляет __pycache__ рядом с кодом
 
 here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -63,6 +65,8 @@ here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$here/release_static.sh"
 # shellcheck source=image_static.sh
 . "$here/image_static.sh"
+# shellcheck source=owners_static.sh
+. "$here/owners_static.sh"
 
 # Префикс sa-tgt-: sa-prov-* зарезервирован за контейнерами provision.sh (у них драйвер журнала none и проверка).
 id="${SA_TGT_ID:-$(printf '%s' "$root" | sha256sum | cut -c1-8)}"
@@ -72,9 +76,9 @@ esac
 net="sa-tgt-net-$id"
 tgt="sa-tgt-target-$id"
 tgt_image="localhost/sa-tgt-target:$id"
-steps=(tofu_fmt tofu_validate tofu_test tofu_static ansible_lint yamllint syntax_check shellcheck selftest provision_cli ctl_shared
+steps=(tofu_fmt tofu_validate tofu_test tofu_static tofu_plan_label ansible_lint yamllint syntax_check shellcheck selftest provision_cli ctl_shared
 	workflow_guard_bypass workflow_static release_gate_cases image_composition stand_archive_mode release_publish_cases runner_check_cases
-	ghcr_probe_cases image_verify actions_pins)
+	ghcr_probe_cases image_verify actions_pins owners_rule)
 # Шаги на цели: в `static` без аргумента не входят (цели там нет), запускаются по имени.
 stand_steps=(converge_image converge_bootstrap converge_site idempotence idempotence_full verify_ssh verify_nft verify_host
 	verify_acl verify_service verify_health verify_after_restart verify_backup_stream mutate_restore_a mutate_restore_b mutate_restore_c mutate_restore_d mutate_caddy mutate_caddy_b mutate_policy mutate_host

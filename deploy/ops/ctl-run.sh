@@ -41,10 +41,11 @@ ctl_fail() {
 	return 1
 }
 
-# Файл hosts.yml для inventory: одна цель по имени server. Пишет provision.sh apply (адрес из tofu output) и
-# стенд (псевдоним цели в сети стенда) — один формат, который читает host_ip.
+# Файл hosts.yml для inventory: одна цель по имени server. Пишет provision.sh (apply, hosts: адрес из tofu output) и
+# стенд (псевдоним цели в сети стенда) — один формат, который читает host_ip. Запись — hosts_write из ops/hosts.sh
+# (временный файл, mv -T, симлинк — отказ): его подключает вызывающий рядом с этим файлом.
 ctl_write_hosts() { # <путь> <адрес>
-	printf 'all:\n  hosts:\n    server:\n      ansible_host: %s\n' "$2" >"$1"
+	hosts_write "$1" "$2"
 }
 
 ctl_json_list() {

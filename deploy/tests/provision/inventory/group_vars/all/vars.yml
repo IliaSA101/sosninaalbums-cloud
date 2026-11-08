@@ -19,6 +19,8 @@ albums_svc_image: "registry.example.org/albums-svc@sha256:0000000000000000000000
 albums_owners:
   - slug: p1
     studio: Студия стенда
+    # Сайт студии — как будет в боевом inventory с образом v0.1.2: роль проверяет его правилом сервиса (spec 005).
+    site: https://studio.example/albums
     quota_bytes: 10737418240
     max_albums: 500
     tokens:

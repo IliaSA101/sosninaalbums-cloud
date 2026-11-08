@@ -47,33 +47,9 @@
     fail_msg: vault_albums_master — base64url не короче 32 байт (43 знака), albums-svc -gen-secret
   no_log: true
 
-- name: Владельцы — слаг, студия, лимиты, токены (только sha256)
-  ansible.builtin.assert:
-    that:
-      - item.slug is defined and item.slug is string and item.slug is regex(albums_svc_slug_re)
-      - item.studio is defined and item.studio is string and item.studio | length >= 1 and item.studio | length <= 100
-      - item.quota_bytes is defined and item.quota_bytes is integer and item.quota_bytes > 0
-      - item.max_albums is defined and item.max_albums is integer and item.max_albums > 0
-      - item.tokens is defined and item.tokens is sequence and item.tokens is not string and item.tokens | length > 0
-      - item.tokens | map(attribute='sha256', default='') | select('regex', albums_svc_sha256_re) | list | length == item.tokens | length
-    quiet: true
-    fail_msg: "владелец в albums_owners задан неверно: слаг [a-z0-9-], студия 1…100 знаков, квота, число альбомов, токены с sha256 (hex, 64)"
-  loop: "{{ albums_owners }}"
-  loop_control:
-    label: "{{ item.slug | default('?') }}"
-  no_log: true
-
-- name: Владельцы — слаги и хэши токенов уникальны
-  ansible.builtin.assert:
-    that:
-      - albums_owners | map(attribute='slug') | unique | list | length == albums_owners | length
-      - albums_all_hashes | unique | list | length == albums_all_hashes | length
-      - albums_owners | length > 0
-    quiet: true
-    fail_msg: слаги владельцев и sha256 токенов должны быть уникальны, владелец — хотя бы один
-  vars:
-    albums_all_hashes: "{{ albums_owners | map(attribute='tokens') | flatten | map(attribute='sha256') | list }}"
-  no_log: true
+# Владельцы — в отдельном файле: его же гоняет статический тест (owners_rule_static.py) на случаях правила.
+- name: Владельцы — поля, подпись, сайт, токены, уникальность
+  ansible.builtin.include_tasks: owners.yml
 
 - name: Группа albums
   ansible.builtin.getent:

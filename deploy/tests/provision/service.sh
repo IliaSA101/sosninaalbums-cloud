@@ -8,7 +8,7 @@
 #   mutate_restore_a/b    sa-restore ослабляется по одному правилу (метки «# rule:» в скрипте): verify_restore_rejects
 #                         обязана покраснеть на соответствующем архиве; на целом скрипте — снова зелёная
 #   mutate_caddy          ключ репозитория, Caddyfile, закрепление версии, остановленная служба, порт 80 → 308
-#   mutate_host           podman, config.json, оболочка albums, чужой subuid, ACL каталога сокета
+#   mutate_host           podman, config.json, оболочка albums, чужой subuid, ACL каталога сокета; LLMNR/mDNS (drop-in) и слушатель в site.yml
 #   mutate_backup         authorized_keys, subuid пользователя бэкапа, получатель age, юнит службы копии
 #
 # Мутация применяется на цели, затем проверка ДОЛЖНА упасть с ожидаемым текстом; после — возврат и зелёный прогон:
@@ -238,6 +238,54 @@ step_mutate_host() {
 	mutate albums/socket_acl verify_albums '/run/albums-svc расходится' 'setfacl -x u:caddy /run/albums-svc' \
 		'setfacl -m u:caddy:x /run/albums-svc' || rc=1
 	green_after verify_podman,verify_albums || rc=1
+	resolved_mutations || rc=1
+	return "$rc"
+}
+
+# LLMNR/mDNS и слушатели в configure (спека 005, 005-11, 005-25, 005-31): каждая защита обязана краснеть на своей мутации.
+# Drop-in побеждает ПОСЛЕДНИЙ по имени: 50-x.conf с LLMNR=yes его не перекрывает (5355 не открыт), zz-x.conf — перекрывает.
+resolved_mutations() {
+	local rc=0 rd=/etc/systemd/resolved.conf.d ds site_skip
+	# reset-failed перед каждым перезапуском: мутации идут подряд, и systemd-resolved упирается в StartLimitBurst («start of the
+	# service was attempted too often», CI 08.11) — перезапуск и возврат отказывали бы не из-за проверки, а из-за лимита.
+	local restart='systemctl reset-failed systemd-resolved && systemctl restart systemd-resolved'
+	mutate resolved/no_dropin verify_resolved 'LLMNR или mDNS включены' "rm -f $rd/99-sa.conf && $restart" \
+		"printf '[Resolve]\\nLLMNR=no\\nMulticastDNS=no\\n' > $rd/99-sa.conf && $restart" || rc=1
+	mutate resolved/later_dropin verify_resolved 'LLMNR или mDNS включены' \
+		"printf '[Resolve]\\nLLMNR=yes\\n' > $rd/zz-x.conf && $restart" "rm -f $rd/zz-x.conf && $restart" || rc=1
+	# Слушатель 5355 виден проверке слушателей (5355 — порт LLMNR): без drop-in verify_listeners тоже красная.
+	mutate resolved/listener_5355 verify_listeners ':5355' "rm -f $rd/99-sa.conf && $restart" \
+		"printf '[Resolve]\\nLLMNR=no\\nMulticastDNS=no\\n' > $rd/99-sa.conf && $restart" || rc=1
+	# Более ранний по имени drop-in не перекрывает наш: проверки зелёные, 5355 не слушается.
+	on_target "printf '[Resolve]\\nLLMNR=yes\\n' > $rd/50-x.conf && $restart" || rc=1
+	# grep -c при нуле совпадений завершается кодом 1: `|| true` отделяет «ноль слушателей» от сбоя; ss запускается отдельно (в конвейере его код терялся бы), решает число.
+	# shellcheck disable=SC2016  # раскрытие — на цели, не здесь
+	local cnt='o=$(ss -Hltun) && { printf "%s\n" "$o" | grep -c :5355 || true; }'
+	if ! ds=$(on_target "$cnt"); then
+		echo "  FAIL resolved/early_dropin: ss не отработал на цели"
+		rc=1
+	elif [ "$ds" != 0 ]; then
+		echo "  FAIL resolved/early_dropin: 50-x.conf с LLMNR=yes открыл 5355 ($ds)"
+		rc=1
+	else
+		verify_ok "resolved/early_dropin: 50-x.conf не перекрывает 99-sa.conf, 5355 не слушается"
+	fi
+	green_after verify_resolved,verify_listeners || rc=1
+	on_target "rm -f $rd/50-x.conf && $restart" || rc=1
+	# Слушатель вне lo ловит и сам configure: site.yml (post_tasks) обязан упасть и назвать слушатель.
+	site_tags
+	cmd_listener on || rc=1
+	sleep 1
+	if play site.yml "${site_skip[@]}" >/dev/null 2>&1; then
+		echo "  FAIL мутация site/listener_8080: site.yml прошёл со слушателем 8080 вне lo"
+		rc=1
+	elif ! printf '%s\n' "$play_out" | grep -Fq '0.0.0.0:8080'; then
+		echo "  FAIL мутация site/listener_8080: site.yml упал не на слушателе"
+		rc=1
+	else
+		verify_ok "мутация site/listener_8080: configure (post_tasks) красный («0.0.0.0:8080»)"
+	fi
+	cmd_listener off || rc=1
 	return "$rc"
 }
 

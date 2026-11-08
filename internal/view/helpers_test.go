@@ -123,7 +123,7 @@ func newEnv(t testing.TB, mutate ...func(*envOpts)) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.opt = Options{PublicBase: publicBase, Studios: map[string]string{owner: studioName}, TrustedProxy: eo.trusted, Log: log, Tagger: tagger, Now: e.clk.Wall}
+	e.opt = Options{PublicBase: publicBase, Owners: map[string]Owner{owner: {Studio: studioName}}, TrustedProxy: eo.trusted, Log: log, Tagger: tagger, Now: e.clk.Wall}
 	e.h, err = New(e.svc, e.pw, e.ck, lim, e.opt)
 	if err != nil {
 		t.Fatal(err)

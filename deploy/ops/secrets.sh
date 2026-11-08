@@ -16,6 +16,9 @@ prov_run() {
 }
 
 s_clo_token='' s_vault_pass='' s_ssh_phrase='' s_backup_phrase='' s_age_identity=''
+# Необязательные: токены дымовой проверки и списка альбомов (provision.sh smoke, albums; спека 005, 005-29). Остальным командам
+# они не нужны, поэтому их отсутствие не ошибка расшифровки; нужной команде их отсутствие — отказ с подсказкой.
+s_smoke_token='' s_ls_token='' # читает ops/api.sh (в этом файле они только присваиваются)
 
 # secrets_load <образ контроллера>: фраза age спрашивается с /dev/tty контейнера (то есть с терминала раскатки),
 # расшифрованное идёт отдельным каналом (дескриптор 3, --preserve-fds=1), а не в терминал: в одном
@@ -26,6 +29,7 @@ secrets_load() {
 	# shellcheck disable=SC2312
 	exec {fd}< <(prov_run age -it --network=none --preserve-fds=1 -v "$SA_SECRETS:/run/sa/secrets.age:ro" \
 		"$ctl" age -d -o /dev/fd/3 /run/sa/secrets.age 3>&1 </dev/tty >/dev/tty)
+	# shellcheck disable=SC2034  # s_smoke_token, s_ls_token читает ops/api.sh
 	while IFS= read -r -u "$fd" line; do
 		case $line in
 			clo_token=*) s_clo_token=${line#clo_token=} ;;
@@ -33,6 +37,8 @@ secrets_load() {
 			ssh_key_phrase=*) s_ssh_phrase=${line#ssh_key_phrase=} ;;
 			backup_key_phrase=*) s_backup_phrase=${line#backup_key_phrase=} ;;
 			age_identity=*) s_age_identity=${line#age_identity=} ;;
+			smoke_token=*) s_smoke_token=${line#smoke_token=} ;;
+			ls_token=*) s_ls_token=${line#ls_token=} ;;
 		esac
 	done
 	exec {fd}<&-

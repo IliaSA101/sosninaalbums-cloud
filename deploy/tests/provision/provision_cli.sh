@@ -143,7 +143,9 @@ step_provision_cli() {
 	# состав «клона» в тесте и ронять проверки. __pycache__ и *.pyc исключены явно: корневой .gitignore их пока не
 	# знает (правка .gitignore — у оркестратора).
 	ref=$(mktemp -d "$cache/ref.XXXXXX") || return 1
+	# Список файлов фильтруется до tar (не только --exclude): кэш python не должен попасть в копию ни при каком .gitignore.
 	(cd "$root" && git ls-files -z --cached --others --exclude-standard -- deploy web/viewer/notfound.html .github |
+		{ grep -zvE '(^|/)__pycache__/|[.]pyc$|^deploy/inventory/' || true; } |
 		tar --null --exclude=deploy/inventory --exclude=__pycache__ --exclude='*.pyc' --ignore-failed-read -cf - -T - 2>/dev/null) | tar -C "$ref" -x || {
 		rm -rf -- "$ref"
 		echo "не собралась эталонная копия кода для provision_cli"
@@ -161,7 +163,8 @@ step_provision_cli() {
 		echo "не собрались файлы метки для основного прогона"
 		return 1
 	}
-	cli_run "$img" "$ref" "${CLI_LABEL_MOUNTS[@]}" -- bash /ref/deploy/tests/provision/cli/inner.sh
+	# --cap-add=NET_ADMIN — только основному прогону и только на адрес lo (cli/inner_start.sh, 005-33); дальше inner.sh без capabilities.
+	cli_run "$img" "$ref" "${CLI_LABEL_MOUNTS[@]}" --cap-add=NET_ADMIN -- bash /ref/deploy/tests/provision/cli/inner_start.sh
 	rc=$?
 	# 3. Отдельные прогоны под метки (после основного: его провал не должен скрывать их итог, но и не маскируется).
 	cli_label_cases "$img" "$ref" "$lab" || rc=1

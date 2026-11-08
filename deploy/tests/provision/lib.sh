@@ -32,7 +32,8 @@ need() {
 
 # Общие флаги контейнера инструмента: без записи в корень, без capabilities и повышения прав, лимит процессов.
 # Корень контейнера — host-пользователь (rootless), поэтому смонтированное с :ro он не меняет.
-hflags=(--rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --tmpfs '/tmp:rw,mode=1777')
+# PYTHONDONTWRITEBYTECODE: python на смонтированном дереве не оставляет __pycache__/*.pyc (они попадали в эталонную копию кода тестов).
+hflags=(--rm --read-only --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --tmpfs '/tmp:rw,mode=1777' -e PYTHONDONTWRITEBYTECODE=1)
 
 # tofu_run <сеть: none|default> <каталог модуля> <имя кэша> <аргументы tofu…>
 # Модуль — в /work только для чтения; данные init (провайдеры) — в кэше, чтобы не качать каждый раз.

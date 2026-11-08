@@ -48,19 +48,20 @@ prepare_checks() {
 
 	# apply: init без сети из зеркала провайдера; адрес сервера напечатан.
 	: >"$SHIM_LOG"
-	drive_rc "apply: проходит с init без сети" 0 /tmp/sc.full -- apply
+	drive_rc "apply: проходит с init без сети" 0 /tmp/sc.apply -- apply
 	check "apply: init без сети из зеркала (-plugin-dir, lock readonly)" grep -qxF "$want_init" "$SHIM_LOG"
 	check "apply: контейнер init — --network=none" init_offline "$SHIM_LOG"
-	check "apply: адрес сервера напечатан" grep -qF 'адрес сервера: 127.0.0.1' /tmp/out.txt
-	check "apply: напечатана строка: сверить с панелью, правило tcp/22 (README §1)" grep -qF 'сверить с панелью провайдера; в раскатке — правило tcp/22 (README §1)' /tmp/out.txt
+	check "apply: адрес сервера напечатан" grep -qF "адрес сервера: $CLI_IP" /tmp/out.txt
+	check "apply: напечатаны строка «сверить с панелью» и готовые команды ufw (tcp 22 и 443, README §1)" bash -c 'grep -qF "сверить с панелью провайдера; правила администратора ops-ВМ (README §1):" /tmp/out.txt &&
+		grep -qF "sudo ufw allow out to $1 port 22 proto tcp" /tmp/out.txt && grep -qF "sudo ufw allow out to $1 port 443 proto tcp" /tmp/out.txt' _ "$CLI_IP"
 	check "apply: curl не вызывался (скачивает только prepare)" bash -c '! grep -q "^CURL " "$1"' _ "$SHIM_LOG"
 	: >"$SHIM_LOG"
-	drive_rc "apply: tf_entry из окружения не меняет точку входа" 0 /tmp/sc.full tf_entry=/bin/evil -- apply
+	drive_rc "apply: tf_entry из окружения не меняет точку входа" 0 /tmp/sc.apply tf_entry=/bin/evil -- apply
 	check "apply: при tf_entry в окружении точка входа прежняя (tofu-entry.sh)" bash -c '! grep -q "bin/evil" "$1" && grep -q -- "--entrypoint /work/tofu-entry.sh" "$1"' _ "$SHIM_LOG"
 	: >"$SHIM_LOG"
 	drive_rc "apply: init не прошёл — ошибка с подсказкой окна подготовки" 1 /tmp/sc.full FAKE_INIT_FAIL=1 -- apply
 	check "apply: подсказка называет окно подготовки и prepare" grep -qF "провайдер не установлен или не совпал с lock: $hint" /tmp/out.txt
-	check "apply: после отказа init план не запускался" bash -c '! grep -q "^TOFU apply" "$1"' _ "$SHIM_LOG"
+	check "apply: после отказа init план не запускался" bash -c '! grep -q "^TOFU \(apply\|plan\)" "$1"' _ "$SHIM_LOG"
 	drive_rc "apply: контроллер не собрался — подсказка окна подготовки" 1 /tmp/sc.full FAKE_BUILD_FAIL=1 -- apply
 	check "контроллер: сообщение о сборке называет окно подготовки" grep -qF "не собрался контроллер: $hint" /tmp/out.txt
 

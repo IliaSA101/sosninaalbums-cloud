@@ -17,6 +17,8 @@
 # shellcheck source-path=SCRIPTDIR disable=SC2154  # net, tgt, tgt_image, work, sd, here, root, id — из run.sh и lib.sh; skip_reason читает run.sh
 # shellcheck source=../../ops/ctl-run.sh
 . "$root/deploy/ops/ctl-run.sh"
+# shellcheck source=../../ops/hosts.sh
+. "$root/deploy/ops/hosts.sh" # hosts_write: ctl_write_hosts пишет hosts.yml тем же кодом, что provision.sh
 
 # Собственный каталог стенда для снимка кода, inventory Ansible и сокета агента: <каталог ключей>/ctl-<id>, внутри
 # файл-метка. Удаляется (run.sh down, пересборка снимка) только каталог с меткой: при SA_TGT_WORK, указывающем на

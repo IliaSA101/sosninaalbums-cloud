@@ -34,6 +34,30 @@ albums_svc_sha256_re: '^[0-9a-f]{64}\Z'
 albums_svc_master_re: '^[A-Za-z0-9_-]{43,}={0,2}\Z'
 albums_svc_image_re: '^[^\s@]+@sha256:[0-9a-f]{64}\Z'
 
+# Правила полей владельца — те же, что у сервиса (internal/config/config.go: checkOwners, checkSite). Роль кладёт
+# albums_owners в config.json как есть, и роль мягче сервиса означает сервис, не стартующий у всех владельцев, —
+# уже после записи конфига. Расхождение с сервисом ловит deploy/tests/provision/owners_rule_static.py
+# (общий файл случаев internal/config/testdata/site_cases.json).
+# Поля владельца: неизвестный ключ (опечатка «sitе») сервис отвергает (DisallowUnknownFields).
+albums_svc_owner_keys: [slug, studio, site, quota_bytes, max_albums, tokens]
+albums_svc_token_keys: [name, sha256]
+# Предел quota_bytes (int64) и max_albums (int, 64 бита на amd64/arm64) в config.go: больше — json.Unmarshal сервиса
+# не разберёт число, и сервис не стартует.
+albums_svc_int64_max: 9223372036854775807
+# site: https, DNS-имя в ASCII (последняя метка с буквы — отсекает IP «127.1», «0x7f.1»), без пользователя, порта,
+# запроса и якоря, путь из безопасного набора. «\Z», а не «$»: тест regex — это re.search, и «$» пропустил бы
+# хвостовой перевод строки. Длина ≤ 200 байт и точечные сегменты — в albums_svc_site_dot_re и в assert.
+albums_svc_site_re: '^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?(/([A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?\Z'
+# Сегмент пути «.» или «..» (в том числе %2e в любом регистре): браузер его сворачивает, и href разошёлся бы со значением.
+albums_svc_site_dot_re: '(^|/)(\.|%2[eE]){1,2}(/|\Z)'
+# Подпись студии и имя токена — без «невидимых» знаков: Cc, Cf, Zl, Zp (config.go: hasInvisible). Набор сверен с
+# таблицей Go 1.27 (Unicode 17) вручную; owners_rule_static.py сверяет его только с unicodedata Python (Unicode 15).
+# При обновлении Go (toolchain в go.mod) — сверить заново.
+albums_svc_invisible_low: '\x00-\x1f\x7f-\x9f\xad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e'
+albums_svc_invisible_mid: '\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb'
+albums_svc_invisible_astral: '\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f'
+albums_svc_visible_re: '^[^{{ albums_svc_invisible_low }}{{ albums_svc_invisible_mid }}{{ albums_svc_invisible_astral }}]+\Z'
+
 # Содержимое /etc/subuid и /etc/subgid (задачи subid.yml) и строки других пользователей, пересекающиеся с диапазоном.
 albums_svc_subid_texts: "{{ albums_svc_subid_raw.results | map(attribute='content', default='') | map('b64decode') | list }}"
 albums_svc_subid_conflicts: >-

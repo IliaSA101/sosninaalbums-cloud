@@ -38,7 +38,8 @@ base=(XDG_SESSION_ID=1 XDG_RUNTIME_DIR=/run/user/1000 SA_OPS_USER=saops SA_INVEN
 # --- клон из bundle, inventory, ключи, секреты ----------------------------------------------------------
 mkdir -p "$HOME/origin" "$HOME/.ssh" "$BK" # $HOME/src создаёт review.sh сам (ниже проверяется его umask)
 chmod 700 "$HOME" "$HOME/.ssh"
-cp -r /ref/deploy "$HOME/origin/deploy"
+# Копия кода в «origin» — без кэша python и *.pyc: клон, который проверяет review.sh, обязан состоять из исходников.
+tar -C /ref --exclude=__pycache__ --exclude='*.pyc' -cf - deploy | tar -C "$HOME/origin" -xf -
 mkdir -p "$HOME/origin/web/viewer"
 cp /ref/web/viewer/notfound.html "$HOME/origin/web/viewer/"
 image_origin_files "$HOME/origin"
@@ -59,6 +60,17 @@ no_leftovers() { ! compgen -G "$HOME/.review.*" >/dev/null && [ ! -e "$HOME/in.b
 # owned_safe отказывал бы следующему запуску. Каталога ~/src до первого просмотра нет — его создаёт сам скрипт.
 [ ! -e "$HOME/src" ] || bad "стенд: $HOME/src уже есть до первого просмотра"
 (umask 002 && review main)
+review_rc=$?
+# Ранний явный провал с причиной: без него отказ просмотра кода (например, невидимый или управляющий символ в файле deploy/)
+# виден только по цепочке следствий («нет less.txt», «HEAD не найден»). Печатаются хвост вывода review.sh и, если причина
+# в невидимых символах, файл и строка (чистые коды юникода: сам файл теста остаётся в белом списке).
+# Найденная строка печатается через `cat -v` (ESC, CR, U+202E — видимыми ^[, ^M, M-…): иначе они искажали бы журнал CI ровно в месте указания.
+if [ "$review_rc" != 0 ]; then
+	bad "review: первый просмотр кода отказал (код $review_rc) — остальные провалы ниже его следствие; причина:"
+	tail -n 5 /tmp/review.txt
+	LC_ALL=C.UTF-8 grep -rnP '[\x{00}-\x{08}\x{0B}\x{0C}\x{0E}-\x{1F}\x{7F}-\x{9F}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2069}\x{FEFF}]' \
+		/ref/deploy /ref/web /ref/.github 2>/dev/null | cat -v | cut -c1-120 | head -n 5 | sed 's/^/  подозрительный символ: /'
+fi
 check "review: первый просмотр прошёл, клон создан" test -d "$clone/.git"
 check "review: при umask 002 ~/src и клон созданы с правами 700" bash -c '[ "$(stat -c %a "$1" "$2" | tr "\n" " ")" = "700 700 " ]' _ "$HOME/src" "$clone"
 check "review: diff от пустого дерева непустой и содержит весь код" grep -q 'diff --git a/deploy/ops/guard.sh' /tmp/shim-out/less.txt
@@ -70,7 +82,7 @@ check "review: копия bundle и временный каталог (скры�
 mkdir -p "$inv/tofu" "$inv/ansible"
 printf 'SA_DOMAIN=host.example.org\nSA_ADMIN_USER=admin-example\n' >"$inv/provision.env"
 printf 'api_url = "https://api.invalid"\nproject_id = "p"\n' >"$inv/tofu/clo.tfvars"
-printf 'all:\n  hosts:\n    server:\n      ansible_host: 127.0.0.1\n' >"$inv/ansible/hosts.yml"
+printf 'all:\n  hosts:\n    server:\n      ansible_host: %s\n' "$CLI_IP" >"$inv/ansible/hosts.yml"
 printf '%s\n' "$head0" >"$inv/deployed-commit"
 image_seed "$head0"
 # Второй просмотр: diff от развёрнутого коммита; плохие коммиты — отказ до checkout.
@@ -142,7 +154,7 @@ check "review: симлинк в раскатываемых путях — от�
 gitc -C "$HOME/origin" checkout -q main
 ssh-keygen -q -t ed25519 -N "$PHRASE_SSH" -f "$HOME/.ssh/id_server"
 ssh-keygen -q -t ed25519 -N "$PHRASE_BACKUP" -f "$HOME/.ssh/id_backup"
-reset_known() { printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 "$HOME/.ssh/id_server.pub")" >"$inv/known_hosts"; }
+reset_known() { printf '%s %s\n' "$CLI_IP" "$(cut -d' ' -f1,2 "$HOME/.ssh/id_server.pub")" >"$inv/known_hosts"; }
 reset_known
 
 # Гипотеза П2a-3 (ssh-add): SSH_ASKPASS_REQUIRE=force и унаследованный дескриптор 3 доходят до помощника.
@@ -204,6 +216,8 @@ drive() { # <сценарий> <env…> -- <команда>: под pty, фра�
 }
 printf 'expect yes/no\nsend yes\nexpect Enter passphrase:\nsend $PHRASE_SECRETS\n' >/tmp/sc.full
 printf 'expect yes/no\nsend yes\n' >/tmp/sc.yes
+# apply: просмотр кода, фраза секретов и вопрос «Применить именно этот план?» (ops/plan.sh).
+printf 'expect yes/no\nsend yes\nexpect Enter passphrase:\nsend $PHRASE_SECRETS\nexpect yes/no\nsend yes\n' >/tmp/sc.apply
 drive_rc() { # <имя> <код> <сценарий> <env…> -- <команда>
 	local n=$1 want=$2 rc
 	shift 2
@@ -313,6 +327,7 @@ want_rc "отказ: token в *.tfvars" 3 -- up
 printf 'api_url = "https://api.invalid"\nproject_id = "p"\n' >"$inv/tofu/clo.tfvars"
 . "$R/inner_ext.sh"
 . "$R/inner_prepare.sh"
+. "$R/inner_hosts.sh"
 # --- код 2 -----------------------------------------------------------------------------------------------
 want_rc "код 2: способ B" 2 SA_START=existing-ssh -- up
 want_rc "код 2: способ C" 2 SA_START=provider-only -- up
@@ -322,20 +337,20 @@ want_rc "код 2: другой провайдер" 2 SA_PROVIDER=other -- up
 drive_rc "код 4: сервер недоступен (configure)" 4 /tmp/sc.full -- configure
 
 # --- apply: секреты, контейнеры, журнал ------------------------------------------------------------------
-python3 -I -c 'import socket
+python3 -I -c 'import socket, sys
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", 22))
+s.bind((sys.argv[1], 22))
 s.listen(8)
 while True:
     c, _ = s.accept()
-    c.close()' &
+    c.close()' "$CLI_IP" &
 lpid=$!
 : >"$SHIM_LOG"
 : >"$SHIM_PS"
 rm -f "$inv/ansible/hosts.yml"
-drive_rc "apply проходит" 0 /tmp/sc.full -- apply
-check "apply: адрес из output записан в hosts.yml" grep -q 'ansible_host: 127.0.0.1' "$inv/ansible/hosts.yml"
+drive_rc "apply проходит" 0 /tmp/sc.apply -- apply
+check "apply: адрес из output записан в hosts.yml" grep -qF "ansible_host: $CLI_IP" "$inv/ansible/hosts.yml"
 check "apply: init строго по lock-файлу" grep -q 'TOFU init -lockfile=readonly' "$SHIM_LOG"
 check "apply: токен дошёл до tofu через tofu-entry.sh" grep -q TOFU-TOKEN-OK "$SHIM_LOG"
 check "apply: без -replace" bash -c '! grep -q -- "-replace" "$1"' _ "$SHIM_LOG"
@@ -343,11 +358,12 @@ check "каждый контейнер — sa-prov-*" bash -c '! grep "^RUN" "$1
 check "каждый контейнер — --log-driver=none" bash -c '! grep "^RUN" "$1" | grep -qv "log=none"' _ "$SHIM_LOG"
 check "токен: файла в XDG_RUNTIME_DIR нет после выхода" bash -c '! ls /run/user/1000/sa-token-* 2>/dev/null | grep -q .'
 check "агент: сокета нет после выхода" bash -c '! ls /run/user/1000/sa-agent-* 2>/dev/null | grep -q .'
-drive_rc "apply --replace-server проходит" 0 /tmp/sc.full -- apply --replace-server
-check "apply --replace-server: ровно -replace сервера" grep -q 'TOFU apply .*-replace=clo_compute_instance.srv' "$SHIM_LOG"
-drive_rc "apply: private_key в state — ошибка" 1 /tmp/sc.full FAKE_STATE_LEAK=1 -- apply
+drive_rc "apply --replace-server проходит" 0 /tmp/sc.apply -- apply --replace-server
+check "apply --replace-server: ровно -replace сервера — в плане, apply плана без флагов" bash -c 'grep -q "TOFU plan .*-replace=clo_compute_instance.srv" "$1" && ! grep "^TOFU apply" "$1" | grep -q -- "-replace"' _ "$SHIM_LOG"
+drive_rc "apply: private_key в state — ошибка" 1 /tmp/sc.apply FAKE_STATE_LEAK=1 -- apply
 check "apply: сообщение называет private_key" grep -q private_key /tmp/out.txt
 prepare_checks
+hosts_all_checks
 : >"$SHIM_LOG"
 rm -f "$inv/deployed-commit"
 rm -f "$SHIM_OUT/less.txt"
@@ -381,7 +397,7 @@ cp "$inv/known_hosts" /tmp/known_hosts.keep
 : >"$inv/known_hosts"
 printf 'expect yes/no\nsend yes\nexpect Enter passphrase:\nsend $PHRASE_SECRETS\nexpect веб-консолью\nsend yes\n' >/tmp/sc.first
 drive_rc "configure: первый вход — отпечаток ключа хоста и «yes» (keyscan)" 0 /tmp/sc.first FAKE_SSH_RC=0 FAKE_HOSTKEY="$HOME/.ssh/id_server.pub" -- configure
-check "configure: отпечаток показан, ключ записан в known_hosts" bash -c 'grep -q "SHA256:" /tmp/out.txt && grep -q "^127.0.0.1 ssh-ed25519 " "$1"' _ "$inv/known_hosts"
+check "configure: отпечаток показан, ключ записан в known_hosts" bash -c 'grep -q "SHA256:" /tmp/out.txt && grep -q "^$2 ssh-ed25519 " "$1"' _ "$inv/known_hosts" "$CLI_IP"
 cp /tmp/known_hosts.keep "$inv/known_hosts"
 check "diff: показан в less без R и с LESSSECURE" bash -c 'grep -q "LESSSECURE=1" "$1/less.env" && ! grep -Eq "^LESS=[^ ]*[Rr]" "$1/less.env"' _ "$SHIM_OUT"
 

@@ -13,11 +13,14 @@ import {
   sameBook,
   visibleIndexes,
 } from './manifest.js'
+import { studioNode } from './studio.js'
+import { createWheel, isZoomed } from './wheel.js'
 
 const LIB_URL = new URL('vendor/page-flip-2.0.7.browser.js', import.meta.url).href
 const $ = (id) => document.getElementById(id)
 const el = { title: $('title'), studio: $('studio'), stage: $('stage'), status: $('status'), prev: $('prev'), next: $('next'), counter: $('counter') }
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+const wheel = createWheel()
 
 class HttpError extends Error {
   constructor(status) {
@@ -139,6 +142,28 @@ function onKey(e) {
   }
 }
 
+// Колесо и тачпад листают книгу; логика жеста — в wheel.js, здесь только связка с DOM. Слушатель на document с
+// passive: false: страница не прокручивается, а preventDefault гасит уход «назад по истории» свайпом на Mac.
+// Щипок и Ctrl+колесо (масштаб) и увеличенный вид wheel.js пропускает — без preventDefault.
+function onWheel(e) {
+  if (!state.book) return
+  const act = wheel.feed(
+    {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      ctrlKey: e.ctrlKey,
+      zoomed: isZoomed(window.visualViewport),
+      pagePx: e.deltaMode === 2 ? stageSize(el.stage).h : 0, // высота страницы нужна только для deltaMode 2
+    },
+    performance.now(),
+  )
+  if (act === 'pass') return
+  e.preventDefault()
+  if (act === 'next') state.book.next()
+  else if (act === 'prev') state.book.prev()
+}
+
 async function start() {
   say('Загружаем альбом…')
   let m
@@ -146,13 +171,14 @@ async function start() {
   try {
     const [raw, v] = await Promise.all([getJSON('manifest.json'), getJSON('view.json').catch(() => ({}))])
     m = parseManifest(raw)
-    if (v && typeof v.studio === 'string') view = { studio: clip(v.studio, 200) }
+    if (v && typeof v.studio === 'string') view = { studio: clip(v.studio, 200), site: v.site }
   } catch (e) {
     say(e instanceof ManifestError ? 'Этот альбом не удалось открыть.' : 'Не удалось загрузить альбом. Обновите страницу.')
     return
   }
   el.title.textContent = m.title
-  el.studio.textContent = view.studio || ''
+  // Подпись — ссылка на сайт студии, только если адрес прошёл правило (studio.js); иначе текст.
+  el.studio.replaceChildren(studioNode(document, view.studio, view.site))
   document.title = [m.title, view.studio].filter(Boolean).join(' · ')
   try {
     state.St = await loadFlipLib(LIB_URL)
@@ -165,6 +191,7 @@ async function start() {
   el.prev.addEventListener('click', () => state.book.prev())
   el.next.addEventListener('click', () => state.book.next())
   document.addEventListener('keydown', onKey)
+  document.addEventListener('wheel', onWheel, { passive: false })
   // До первой сборки: обработчик resize у StPageFlip ставится при сборке и должен идти после нашего, который
   // сперва подгоняет размер книги под окно.
   window.addEventListener('resize', onResize)

@@ -22,6 +22,8 @@ html,
 body {
   margin: 0;
   height: 100%;
+  /* Колесо и свайп листают книгу (app.js): браузер не должен ещё и тянуть страницу или уходить «назад». */
+  overscroll-behavior: none;
 }
 
 body {
@@ -70,6 +72,24 @@ body.viewer {
   font-size: 0.85rem;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* Подпись-ссылка на сайт студии (studio.js): цвет подписи, подчёркивание при наведении и фокусе с клавиатуры. */
+.bar-studio a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bar-studio a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bar-studio a:focus-visible {
+  /* Внутрь: у .bar-studio overflow: hidden, внешняя обводка обрезалась бы. */
+  outline: 2px solid #5b8bd9;
+  outline-offset: -2px;
 }
 
 .stage {
@@ -268,35 +288,4 @@ body.plain {
   color: #fff;
   font: inherit;
   cursor: pointer;
-}
-
-/* --- ссылка на исходный код (AGPL-3.0 §13: пользователям сервиса по сети заметно предлагается код) --- */
-
-.source {
-  margin: 0;
-  padding: 0 16px 6px;
-  color: var(--muted);
-  font-size: 0.72rem;
-  line-height: 1.2;
-  text-align: center;
-}
-
-.source a {
-  color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.source a:hover {
-  color: var(--ink);
-}
-
-.source a:focus-visible {
-  outline: 3px solid #5b8bd9;
-  outline-offset: 2px;
-}
-
-.card .source {
-  margin-top: 20px;
-  padding: 0;
 }

@@ -87,12 +87,12 @@ func assemble(cfg *config.Config, keys *config.Keys, svc *album.Service, tokens 
 	if err != nil {
 		return nil, fmt.Errorf("лимит попыток входа: %w", err)
 	}
-	studios := make(map[string]string, len(cfg.Owners))
+	owners := make(map[string]view.Owner, len(cfg.Owners))
 	for _, o := range cfg.Owners {
-		studios[o.Slug] = o.Studio
+		owners[o.Slug] = view.Owner{Studio: o.Studio, Site: o.Site}
 	}
 	v, err := view.New(svc, access.NewPasswords(keys.Password), access.NewCookies(keys.Cookie), lim, view.Options{
-		PublicBase: cfg.PublicBase, Studios: studios, TrustedProxy: cfg.TrustedProxy, Log: log, Tagger: tagger,
+		PublicBase: cfg.PublicBase, Owners: owners, TrustedProxy: cfg.TrustedProxy, Log: log, Tagger: tagger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("листалка: %w", err)

@@ -42,12 +42,19 @@ const (
 	msgTooBig  = "Запрос слишком большой"
 )
 
+// Owner — то, что листалка знает о владельце: подпись студии и необязательный адрес её сайта. Сайт попадает
+// только в view.json (ссылку строит листалка, 005-2): в HTML-шаблоны он не передаётся. Правило адреса проверено
+// конфигом (config.checkSite); здесь значение берётся как есть.
+type Owner struct {
+	Studio, Site string
+}
+
 // Options — зависимости обработчика.
 type Options struct {
 	// PublicBase — https://домен без пути: в CSP листалка и стили разрешены только оттуда (design §5.6).
 	PublicBase string
-	// Studios — подпись студии по slug владельца (из конфига). Нет владельца в списке — страницы без подписи.
-	Studios map[string]string
+	// Owners — подпись и сайт студии по slug владельца (из конфига). Нет владельца в списке — страницы без подписи.
+	Owners map[string]Owner
 	// TrustedProxy — IP прокси при TCP-варианте связи: заголовок клиента принимается только от него. Пусто —
 	// сокет unix, доверие к заголовку даёт сам сокет.
 	TrustedProxy string
@@ -119,22 +126,22 @@ func New(svc *album.Service, pw *access.Passwords, ck *access.Cookies, lim *acce
 		return nil, fmt.Errorf("шаблоны листалки: %w", err)
 	}
 	assets := "/viewer/" + ver + "/"
-	for slug, studio := range opt.Studios {
-		if h.pages[slug], err = renderPages(tpl, assets, studio); err != nil {
+	for slug, o := range opt.Owners {
+		if h.pages[slug], err = renderPages(tpl, assets, o); err != nil {
 			return nil, err
 		}
 	}
-	if h.anon, err = renderPages(tpl, assets, ""); err != nil {
+	if h.anon, err = renderPages(tpl, assets, Owner{}); err != nil {
 		return nil, err
 	}
 	return h, nil
 }
 
-func renderPages(tpl *template.Template, assets, studio string) (*ownerPages, error) {
+func renderPages(tpl *template.Template, assets string, o Owner) (*ownerPages, error) {
 	p := &ownerPages{login: map[string][]byte{}}
 	run := func(name, msg string) ([]byte, error) {
 		var buf bytes.Buffer
-		if err := tpl.ExecuteTemplate(&buf, name, viewer.PageData{Assets: assets, Studio: studio, Message: msg}); err != nil {
+		if err := tpl.ExecuteTemplate(&buf, name, viewer.PageData{Assets: assets, Studio: o.Studio, Message: msg}); err != nil {
 			return nil, fmt.Errorf("шаблон %s: %w", name, err)
 		}
 		return buf.Bytes(), nil
@@ -148,9 +155,11 @@ func renderPages(tpl *template.Template, assets, studio string) (*ownerPages, er
 			return nil, err
 		}
 	}
+	// site с omitempty: у владельца без сайта ответ байт в байт как в v0.1.1 (005-5).
 	if p.viewJSON, err = json.Marshal(struct {
 		Studio string `json:"studio"`
-	}{studio}); err != nil {
+		Site   string `json:"site,omitempty"`
+	}{o.Studio, o.Site}); err != nil {
 		return nil, fmt.Errorf("view.json: %w", err)
 	}
 	return p, nil

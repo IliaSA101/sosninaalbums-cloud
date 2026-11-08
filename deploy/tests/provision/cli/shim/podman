@@ -79,6 +79,14 @@ case ${name:-} in
 			[ "${m#*:}" != "/in/action.yml:ro" ] || cmd=(bash -c 'grep -Eq "^[[:space:]]*using:[[:space:]]*node[0-9]+" "$1"' _ "${m%%:*}")
 		done
 		;;
+	sa-prov-api-*)
+		# smoke и albums (ops/api.sh): вместо клиента — запись того, что он увидел бы: токен из тома /run/sa/token (его читает тест)
+		# и код выхода FAKE_API_RC. Argv клиента (python3 -I … smoke.py <команда>) виден тесту в строке RUN журнала.
+		for m in "${maps[@]}"; do
+			# shellcheck disable=SC2016  # $1…$3 раскрывает внутренний bash
+			[ "${m#*:}" != "/run/sa/token:ro" ] || cmd=(bash -c 'cat -- "$1" >"$2"; exit "$3"' _ "${m%%:*}" "$SHIM_OUT/api-token" "${FAKE_API_RC:-0}")
+		done
+		;;
 esac
 case ${cmd[0]} in
 	attestation | --version | python3)

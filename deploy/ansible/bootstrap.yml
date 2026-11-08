@@ -12,6 +12,18 @@
     # Соединение и sudo: аргументы ssh — те же, что у пробных входов роли; пароль sudo — из vault.
     ansible_ssh_common_args: "{{ sa_ssh_args | map('quote') | join(' ') }}"
     ansible_become_password: "{{ vault_admin_password }}"
+  # Та же проверка владельцев, что первой в site.yml (005-35): на первом configure и после --replace-server этот файл идёт
+  # до site.yml, и опечатка во владельцах всплыла бы после минут изменений (bootstrap, фильтр, полное обновление пакетов).
+  # Только чтение переменных inventory; tags: always — проверка идёт и при --tags/--skip-tags.
+  pre_tasks:
+    - name: Владельцы — правила сервиса до изменений на сервере
+      ansible.builtin.include_role:
+        name: albums_svc
+        tasks_from: owners.yml
+        apply:
+          tags: [always]
+      tags: [always]
+
   roles:
     - role: bootstrap
     - role: nftables

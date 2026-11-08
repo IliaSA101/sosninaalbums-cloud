@@ -21,6 +21,10 @@
   failed_when: bootstrap_subid.rc not in [0, 1]
   tags: [verify_users]
 
+- name: "Проверка verify_resolved: LLMNR и mDNS выключены на всех связях"
+  ansible.builtin.include_tasks: resolved_check.yml
+  tags: [verify_resolved]
+
 - name: "Проверка verify_users: группа albums"
   ansible.builtin.getent:
     database: group

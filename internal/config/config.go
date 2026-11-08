@@ -61,10 +61,12 @@ type Login struct {
 	PerAlbum   Rate `json:"per_album"`
 }
 
-// Owner — фотограф: slug (каталог на диске, в адрес не входит), подпись студии, квоты и токены.
+// Owner — фотограф: slug (каталог на диске, в адрес не входит), подпись студии, сайт студии, квоты и токены.
 type Owner struct {
-	Slug       string  `json:"slug"`
-	Studio     string  `json:"studio"`
+	Slug   string `json:"slug"`
+	Studio string `json:"studio"`
+	// Site — необязательный адрес сайта студии: подпись в листалке станет ссылкой. Правило — checkSite.
+	Site       string  `json:"site"`
 	QuotaBytes int64   `json:"quota_bytes"`
 	MaxAlbums  int     `json:"max_albums"`
 	Tokens     []Token `json:"tokens"`
@@ -242,6 +244,11 @@ func (c *Config) checkOwners() []error {
 		if n := utf8.RuneCountInString(o.Studio); n < 1 || n > 100 || !utf8.ValidString(o.Studio) || hasInvisible(o.Studio) {
 			bad("studio: 1…100 знаков без управляющих")
 		}
+		if o.Site != "" {
+			if err := checkSite(o.Site); err != nil {
+				bad("site: %w", err) // текст ошибки — без значения поля
+			}
+		}
 		if o.QuotaBytes <= 0 || o.MaxAlbums <= 0 {
 			bad("quota_bytes и max_albums: положительные")
 		}
@@ -298,6 +305,72 @@ func checkPublicBase(s string) error {
 		return errors.New("схема — https")
 	}
 	return nil
+}
+
+// Предел длины site и части правила для проверки: те же, что у роли Ansible и листалки, —
+// все три читают testdata/site_cases.json, расхождение ловит тест, а не простой сервиса.
+const maxSite = 200
+
+var (
+	siteLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// Последняя метка начинается с буквы: «127.1», «0x7f.1», «0177.0.0.1» браузер читает как IPv4, а Go — как имя.
+	siteTLDRE  = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	sitePathRE = regexp.MustCompile(`^(/([A-Za-z0-9._~/-]|%[0-9A-Fa-f]{2})*)?$`)
+)
+
+// checkSite — правило поля site (005-4, 005-22): https-адрес сайта студии в каноническом виде. Строже, чем
+// нужно Go: ссылку строит браузер, и любое расхождение разбора (WHATWG URL против net/url) — дыра. Поэтому
+// только печатный ASCII, DNS-имя без IP и порта, безопасный путь, u.String() == s. Тексты ошибок —
+// без значения: правило пакета одно, в конфиге рядом лежат хэши токенов.
+func checkSite(s string) error {
+	if len(s) > maxSite {
+		return errors.New("длиннее 200 байт")
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x21 || s[i] > 0x7e || s[i] == '\\' {
+			return errors.New("только печатный ASCII без пробелов и обратной косой (кириллица — punycode)")
+		}
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return errors.New("не разобран как адрес")
+	}
+	if u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return errors.New("только https://хост/путь: без пользователя, запроса и якоря")
+	}
+	if strings.Contains(u.Host, ":") {
+		return errors.New("без порта и IP-адреса")
+	}
+	labels := strings.Split(u.Host, ".")
+	if len(labels) < 2 || !siteTLDRE.MatchString(labels[len(labels)-1]) {
+		return errors.New("хост — DNS-имя с зоной, последняя метка с буквы")
+	}
+	for _, l := range labels[:len(labels)-1] {
+		if !siteLabelRE.MatchString(l) {
+			return errors.New("хост — строчные a-z, цифры и дефис, метка до 63 знаков")
+		}
+	}
+	// Путь берётся из самой строки (после схемы и хоста): u.Path уже раскодирован и маскирует %2F.
+	path := strings.TrimPrefix(s, "https://"+u.Host)
+	if !sitePathRE.MatchString(path) || hasDotSegment(path) {
+		return errors.New("путь — из A-Za-z0-9._~/- и %XX, без сегментов «.» и «..»")
+	}
+	if u.String() != s {
+		return errors.New("не в каноническом виде")
+	}
+	return nil
+}
+
+// hasDotSegment — есть ли в пути сегмент «.» или «..», в том числе записанный как %2e: браузер сворачивает
+// такие сегменты, и href разошёлся бы со значением.
+func hasDotSegment(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		switch strings.ReplaceAll(strings.ToLower(seg), "%2e", ".") {
+		case ".", "..":
+			return true
+		}
+	}
+	return false
 }
 
 func isLoopbackHost(h string) bool {

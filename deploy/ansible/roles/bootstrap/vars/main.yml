@@ -17,3 +17,8 @@ bootstrap_image_user: "{{ image_user | default('') }}"
 bootstrap_admin_home: "/home/{{ admin_user }}"
 bootstrap_ssh_target: "{{ ansible_host | default(inventory_hostname) }}"
 bootstrap_ssh_port: "{{ ansible_port | default(22) }}"
+# systemd-resolved: drop-in читается по порядку имён, побеждает ПОСЛЕДНИЙ файл (resolved.conf.d из /etc, /run, /usr/lib).
+# 99-, а не 00-: 00- перекрыл бы любой файл пакета или cloud-init. У sshd наоборот (первое значение), поэтому там 00-sa.conf.
+bootstrap_resolved_dropin: /etc/systemd/resolved.conf.d/99-sa.conf
+# systemd-resolved работает (по service_facts; нет службы или факта — false): самопроверка LLMNR/mDNS только при работающей.
+bootstrap_resolved_running: "{{ (ansible_facts.services | default({})).get('systemd-resolved.service', {}).get('state', '') == 'running' }}"

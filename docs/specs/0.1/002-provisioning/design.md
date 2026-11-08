@@ -247,7 +247,8 @@ FIDO2 `ed25519-sk` — необязательное усиление позже 
     `block_device { bootable = true, storage_type = "volume", size = 20 }`, `keypairs = [ключ]`, **без**
     `addresses` и без `password` (попал бы в state);
   - `clo_network_ip_attach` — `address_id = clo_network_ip.main.id`, `entity_name = "server"`,
-    `entity_id = clo_compute_instance.srv.id`, `is_primary = true`.
+    `entity_id = clo_compute_instance.srv.id`, **без** `is_primary` (спека 005, 005-12: при 422 провайдер выходит до
+    `SetId`, адрес привязан в API, а в state привязки нет; единственный адрес и так основной).
 - **Почему привязка отдельно (факт по коду).** Удаление сервера берёт `Addresses` из ответа API о сервере и
   передаёт их в запрос удаления как «удалить вместе с сервером»; `prevent_destroy` у `clo_network_ip` от этого не
   спасает. Привязка зависит от сервера (`entity_id` — `ForceNew`), поэтому при `--replace-server` tofu сначала
@@ -258,6 +259,12 @@ FIDO2 `ed25519-sk` — необязательное усиление позже 
   `ignore_changes` новый ID образа «Debian 13» или правка `size` молча предложили бы пересоздание; пересоздание —
   только `--replace-server`. `keypairs` — на всякий случай: `ForceNew` у него по схеме провайдера не проверен, а
   ключ администратора после `bootstrap` ведёт Ansible. Увеличение диска — в панели провайдера.
+  **Уточнение (005-40, провайдер clo 2.8.0, план по сконструированному state без сети, `-refresh=false`):** по схеме
+  `block_device.size` и `keypairs` — `update`, а не `ForceNew`; `image_id` — `ForceNew`; `name`, `flavor_*`, `project_id` у сервера
+  и `ptr` у адреса — `update` (переход на постоянный домен в `ptr` адрес не пересоздаёт). `ignore_changes` остаётся: оно убирает
+  шум и случайные правки, но защита адреса от них не зависит — её держит проверка плана (`ops/plan_check.py`: удаление сервера
+  разрешено только с `--replace-server`, привязка обязана уйти в том же плане). У привязки `entity_id` — `ForceNew`: при `-replace`
+  сервера её действия `[delete, create]`.
 - Выход: `ipv4`, `server_id`.
 - `plan` без настоящего токена невозможен (401 — **факт**). Локально и в CI — только `tofu test` с
   `mock_provider "clo"` и `mock_data` для образа (офлайн, **факт**); привязка — `command = plan` с

@@ -368,7 +368,7 @@ func TestViewNoTitleInHTML(t *testing.T) {
 		}
 	}
 	// Подпись студии из конфига экранируется шаблоном.
-	e.opt.Studios = map[string]string{owner: `<b>x</b><script>alert(1)</script>`}
+	e.opt.Owners = map[string]Owner{owner: {Studio: `<b>x</b><script>alert(1)</script>`}}
 	h, err := New(e.svc, e.pw, e.ck, e.h.lim, e.opt)
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +391,7 @@ func TestViewNoTitleInHTML(t *testing.T) {
 func TestViewUnknownOwnerStudio(t *testing.T) {
 	e := newEnv(t)
 	f := e.published("")
-	e.opt.Studios = map[string]string{"p9": "Чужая студия"}
+	e.opt.Owners = map[string]Owner{"p9": {Studio: "Чужая студия", Site: "https://chuzhaya.example"}}
 	h, err := New(e.svc, e.pw, e.ck, e.h.lim, e.opt)
 	if err != nil {
 		t.Fatal(err)

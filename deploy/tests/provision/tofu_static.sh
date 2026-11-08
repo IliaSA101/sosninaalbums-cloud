@@ -24,3 +24,36 @@ step_tofu_static() {
 	"${run[@]}" -v "$fx:/run/sa/token:ro" "$TOFU_IMAGE" validate -no-color || return 1
 	expect_fail 'нет читаемого непустого файла токена' "${run[@]}" "$TOFU_IMAGE" validate -no-color
 }
+
+# Токен провайдера не попадает в файл плана (спека 005, 005-18, 005-30): apply идёт по сохранённому плану, а план лежит на
+# диске (inventory/tofu/.terraform-clo/sa.plan). Защита — `ephemeral = true` у переменной токена (tofu_static не даёт его
+# снять). Здесь — проверка на настоящем tofu и настоящей обёртке tofu-entry.sh: конфигурация из блока переменной настоящего
+# variables.tf и ресурса встроенного провайдера (план настоящего main.tf без сети и токена невозможен), фиктивный
+# токен-метка — файлом-томом, как в provision.sh. Метки в плане нет; а с `ephemeral = false` она там есть — иначе проверка
+# ничего не доказывала бы.
+step_tofu_plan_label() {
+	local w marker=fixture-plan-label-marker-tango v rc=0 run
+	stray_tofu || return 1
+	has_tofu || skip 'нет конфигурации deploy/tofu/clo (задача И2)' || return $?
+	mkdir -p "$cache" && w=$(mktemp -d "$cache/planlab.XXXXXX") || return 1
+	mkdir -p "$w/ok" "$w/mut" "$w/data-ok" "$w/data-mut" "$w/out"
+	printf '%s' "$marker" >"$w/tok"
+	python3 -I "$here/plan_label_prepare.py" "$tofu_dir/variables.tf" "$w" || {
+		rm -rf -- "$w"
+		return 1
+	}
+	for v in ok mut; do
+		run=(podman run "${hflags[@]}" --network=none --entrypoint /entry.sh -e HOME=/tmp -e TF_DATA_DIR=/data -e TF_INPUT=0
+			-e CHECKPOINT_DISABLE=1 -v "$tofu_dir/tofu-entry.sh:/entry.sh:ro" -v "$w/$v:/work:ro" -v "$w/data-$v:/data"
+			-v "$w/out:/out" -v "$w/tok:/run/sa/token:ro" -w /work)
+		if ! { "${run[@]}" "$TOFU_IMAGE" init -no-color && "${run[@]}" "$TOFU_IMAGE" plan -state=/data/s.tfstate -out="/out/$v.plan" -no-color; } >"$w/$v.log" 2>&1; then
+			tail -n 15 "$w/$v.log"
+			echo "tofu_plan_label: план ($v) не построился"
+			rc=1
+		fi
+	done
+	if [ "$rc" -eq 0 ]; then python3 -I "$here/plan_label_prepare.py" --check "$w/out" "$marker" || rc=1; fi
+	rm -rf -- "$w"
+	[ "$rc" -eq 0 ] || return 1
+	echo "ok   метка-токен: в плане при ephemeral = true её нет, при ephemeral = false — есть"
+}

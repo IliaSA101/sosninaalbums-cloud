@@ -19,7 +19,7 @@
       ansible.builtin.include_role:
         name: bootstrap
         tasks_from: verify.yml
-      tags: [verify_sshd_effective, verify_users]
+      tags: [verify_sshd_effective, verify_users, verify_resolved]
 
     - name: Проверки nftables (порты, интерфейсы, слушатели)
       ansible.builtin.include_role:

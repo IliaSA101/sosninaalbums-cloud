@@ -6,7 +6,9 @@
 #
 #   ~/src/sosninaalbums-cloud/deploy/provision.sh up                      apply + configure
 #   …/provision.sh prepare                     окно подготовки: провайдер архивом с GitHub, сборка контроллера (без секретов)
-#   …/provision.sh apply [--replace-server]    интерактивный tofu apply (план показывает сам tofu)
+#   …/provision.sh apply [--replace-server]    tofu apply ровно по сохранённому плану: показ, проверка кодом, «yes» (ops/plan.sh)
+#   …/provision.sh hosts [<IPv4>]              записать inventory/ansible/hosts.yml (apply оборвался после создания сервера)
+#   …/provision.sh smoke [clean] | albums      дымовая проверка боевого сервера и список альбомов (токены — из файла секретов)
 #   …/provision.sh configure                   bootstrap.yml (если входа администратора нет) и site.yml (образ — ровно проверенный)
 #   …/provision.sh image-verify vX.Y.Z [--allow-downgrade]   проверка выпущенного образа без сети (спека 004, ops/image.sh)
 #   …/provision.sh backup                      забрать копию, проверить метку конца, почистить старые
@@ -39,6 +41,12 @@ repo=$(dirname -- "$here")
 . "$here/ops/tools.sh"
 # shellcheck source=ops/probe.sh
 . "$here/ops/probe.sh"
+# shellcheck source=ops/hosts.sh
+. "$here/ops/hosts.sh"
+# shellcheck source=ops/plan.sh
+. "$here/ops/plan.sh"
+# shellcheck source=ops/api.sh
+. "$here/ops/api.sh"
 
 die() {
 	echo "provision: $*" >&2
@@ -97,9 +105,11 @@ plain_file() {
 	if [ ! -f "$1" ] || [ -L "$1" ] || [ "$(realpath -- "$1")" != "$1" ]; then die "ожидается обычный файл (не симлинк): ${1#"$repo"/}"; fi
 }
 
+tmp_rm=() # файлы, которые cleanup убирает при любом выходе (ops/plan.sh, ops/api.sh)
 # shellcheck disable=SC2317  # вызывается из trap
 cleanup() {
 	[ -z "$tok_file" ] || rm -f -- "$tok_file"
+	[ "${#tmp_rm[@]}" -eq 0 ] || rm -f -- "${tmp_rm[@]}" # сохранённый план, его JSON, файл токена smoke
 	[ -z "$iv_tmp" ] || rm -rf -- "$iv_tmp"
 	[ -z "$agent_pid" ] || kill "$agent_pid" 2>/dev/null
 	[ -z "$agent_sock" ] || rm -f -- "$agent_sock"
@@ -121,7 +131,7 @@ host_ip() {
 	local f="$SA_INVENTORY/ansible/hosts.yml" ip
 	[ -f "$f" ] || die "нет $f: сначала apply"
 	ip=$(sed -n 's/^ *ansible_host: *//p' "$f" | head -n 1)
-	[[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "в hosts.yml нет адреса IPv4"
+	hosts_check_ip "$ip" 2>/dev/null || die "в hosts.yml нет допустимого адреса IPv4 (provision.sh hosts)"
 	echo "$ip"
 }
 
@@ -215,8 +225,11 @@ cmd_apply() {
 	# заметит сам apply: h1 установленного провайдера сверяется с lock при каждом запуске провайдера.
 	tf --network=none -- init -lockfile=readonly -input=false -plugin-dir="$mirror_dir" \
 		-backend-config=path=/state/clo.tfstate || die "провайдер не установлен или не совпал с lock: окно подготовки, provision.sh prepare"
-	tf -it -v "$tok_file:/run/sa/token:ro" -- apply -var-file=/state/clo.tfvars "${extra[@]}" || die "tofu apply не завершён"
-	rm -f -- "$tok_file"
+	# Единственная дорога (ops/plan.sh): план сохранён, показан, проверен кодом и подтверждён; применяется именно он.
+	plan_prepare "${extra[@]}"
+	tf -it -v "$tok_file:/run/sa/token:ro" -- apply -input=false "$plan_ct" ||
+		die "tofu apply не завершён; если сервер уже создан — provision.sh hosts запишет его адрес из state"
+	rm -f -- "$tok_file" "$SA_INVENTORY/tofu/$plan_tail"
 	tok_file=''
 	# В state не должно быть закрытого ключа, пароля и секретов: иначе — перевыпуск (design §3). Без сети: провайдер
 	# в show и output не ходит к API.
@@ -225,12 +238,11 @@ cmd_apply() {
 		die "в state попало значение password, secret, token или private_key: перевыпустить ключи и пароли, state не коммитить"
 	fi
 	ip=$(tf --network=none -- output -raw ipv4) || die "tofu output не прошёл"
-	[[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "в выводе tofu нет адреса ipv4"
+	hosts_check_ip "$ip" || die "адрес из вывода tofu не прошёл проверку: сверить с панелью, затем provision.sh hosts <IPv4>"
 	mkdir -p "$SA_INVENTORY/ansible"
-	ctl_write_hosts "$SA_INVENTORY/ansible/hosts.yml" "$ip"
+	ctl_write_hosts "$SA_INVENTORY/ansible/hosts.yml" "$ip" || die "hosts.yml не записан"
 	echo "сервер: адрес записан в inventory/ansible/hosts.yml; A-запись домена — владелец"
-	echo "адрес сервера: $ip"
-	echo "сверить с панелью провайдера; в раскатке — правило tcp/22 (README §1)"
+	hosts_report "$ip"
 	wait_ssh "$ip"
 }
 
@@ -354,10 +366,11 @@ guard_session
 guard_env
 guard_repo
 case $cmd:$# in
-	up:0 | configure:0 | backup:0 | forget-host:0 | apply:0 | prepare:0 | image-verify:1) ;;
+	up:0 | configure:0 | backup:0 | forget-host:0 | apply:0 | prepare:0 | image-verify:1 | hosts:0 | hosts:1 | smoke:0 | albums:0) ;;
+	smoke:1) [ "$1" = clean ] || refuse "smoke принимает только clean" ;;
 	image-verify:2) [ "$2" = --allow-downgrade ] || refuse "image-verify принимает только --allow-downgrade" ;;
 	apply:1) [ "$1" = --replace-server ] || refuse "apply принимает только --replace-server" ;;
-	*) refuse "неизвестная команда или лишние аргументы (prepare, image-verify vX.Y.Z, up, apply [--replace-server], configure, backup, forget-host)" ;;
+	*) refuse "неизвестная команда или лишние аргументы (prepare, image-verify vX.Y.Z, up, apply [--replace-server], hosts [IPv4], configure, backup, forget-host, smoke [clean], albums)" ;;
 esac
 guard_paths
 
@@ -376,12 +389,13 @@ if [ "$SA_START" != bootstrap ] || [ "$SA_PROVIDER" != clo ]; then
 	exit 2
 fi
 # Значения идут в -e контейнеров и в аргументы: только то, что похоже на домен и имя пользователя.
-[[ -z $SA_DOMAIN || $SA_DOMAIN =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || refuse "SA_DOMAIN не похож на домен"
+# Проверка в LC_ALL=C с явными классами (env_name_ok, ops/guard.sh): в UTF-8-локали диапазоны принимали бы не-ASCII знаки.
+[[ -z $SA_DOMAIN ]] || env_name_ok domain "$SA_DOMAIN" || refuse "SA_DOMAIN не похож на домен"
 for u in SA_ADMIN_USER SA_BACKUP_USER SA_BOOTSTRAP_USER SA_IMAGE_USER; do
-	[[ -z ${!u} || ${!u} =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || refuse "$u: допустимы строчные латинские имена"
+	[[ -z ${!u} ]] || env_name_ok user "${!u}" || refuse "$u: допустимы строчные латинские имена"
 done
 # prepare — без секретов: файла может ещё не быть (первый раз подготовка идёт до него), проверка token в *.tfvars остаётся.
-if [ "$cmd" = prepare ] || [ "$cmd" = image-verify ]; then guard_files nosecrets; else guard_files; fi
+if [ "$cmd" = prepare ] || [ "$cmd" = image-verify ] || [ "$cmd" = hosts ]; then guard_files nosecrets; else guard_files; fi
 
 empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 deployed=''
@@ -413,10 +427,10 @@ fi
 exec {lock_fd}>"$SA_INVENTORY/.lock"
 flock -n "$lock_fd" || die "другой прогон provision.sh уже идёт (блокировка inventory/.lock)"
 # Остатки прошлого прогона (убитого без trap): файл токена и сокеты агентов — только те, чьего PID уже нет.
-for f in "$XDG_RUNTIME_DIR"/sa-token-* "$XDG_RUNTIME_DIR"/sa-agent-*.sock; do
+for f in "$XDG_RUNTIME_DIR"/sa-token-* "$XDG_RUNTIME_DIR"/sa-agent-*.sock "$XDG_RUNTIME_DIR"/sa-plan-*.json "$XDG_RUNTIME_DIR"/sa-state-*.json; do
 	[ -e "$f" ] || continue
 	pid=${f##*-}
-	pid=${pid%.sock}
+	pid=${pid%.*}
 	if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then continue; fi
 	rm -f -- "$f"
 done
@@ -442,13 +456,21 @@ case $cmd in
 	up | configure) image_gate || exit $? ;; # до вопросов и затрат: образ проверен для этого HEAD и нигде больше не задан
 esac
 review_code
+# hosts — после просмотра кода (tofu output исполняет обёртку из клона), но до контроллера и секретов: ни то, ни другое не нужно.
+if [ "$cmd" = hosts ]; then
+	cmd_hosts "$@"
+	exit $?
+fi
 ctl_prepare
 secrets_load "$ctl_id" || exit 1
 case $cmd in
 	backup) load_keys backup ;;
+	smoke | albums) ;; # по ssh не ходят
 	*) load_keys server ;;
 esac
 case $cmd in
+	smoke) cmd_api smoke "${1:-}" ;;
+	albums) cmd_api albums ;;
 	apply) cmd_apply "${1:-}" ;;
 	up)
 		cmd_apply && cmd_configure

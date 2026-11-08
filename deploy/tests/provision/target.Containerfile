@@ -13,10 +13,13 @@ FROM public.ecr.aws/docker/library/debian@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc
 ENV DEBIAN_FRONTEND=noninteractive
 
 # iproute2 — ради `ss` в verify_listeners: в облачном образе он есть, в базовом debian — нет.
+# systemd-resolved — как на сервере провайдера: по умолчанию слушает LLMNR на 5355 на всех адресах, и стенд обязан это видеть
+# (verify_listeners, verify_resolved; спека 005, 005-11). Что пакет не ломает DNS цели (у podman resolv.conf монтируется
+# рантаймом, resolved его не трогает) — гипотеза до первого прогона стенда в CI.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         systemd systemd-sysv dbus openssh-server openssh-client python3 sudo ca-certificates \
-        cloud-init iproute2 \
+        cloud-init iproute2 systemd-resolved \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/ssh/ssh_host_*
 

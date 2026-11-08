@@ -4,10 +4,12 @@
 # дайджесту) и проверка по контракту через Caddy (deploy/tests/conformance/); листалку открывают в браузере.
 #
 #   bash deploy/tests/stand.sh up [matrix|browser]   поднять (по умолчанию matrix)
-#   bash deploy/tests/stand.sh test                  матрица + Conformance (нужен up matrix); сервис в конце запущен
+#   bash deploy/tests/stand.sh test                  матрица + smoke + Conformance (нужен up matrix); сервис в конце запущен
 #   bash deploy/tests/stand.sh seed                  опубликовать альбомы для браузера (без пароля и с паролем)
 #   bash deploy/tests/stand.sh edit                  опубликовать правку альбома «для правки» из seed
 #   bash deploy/tests/stand.sh conformance           только Conformance контракта через Caddy
+#   bash deploy/tests/stand.sh smoke                 дымовая проверка deploy/ops/smoke.py (upload, clean, ls) токеном
+#                                                    владельца smoke стенда против Caddy (нужен up matrix); входит и в test
 #   bash deploy/tests/stand.sh pytest [стадия] [арг…] один запуск pytest (отладка; стадии: main, damage, down, logs)
 #   bash deploy/tests/stand.sh env                   адреса, каталоги, где токены (значения не печатаются)
 #   bash deploy/tests/stand.sh down [--images]       остановить и убрать всё (--images: и образы localhost/sa-stand-*)
@@ -124,14 +126,20 @@ cmd_up() {
 	podman build -q -f "$root/deploy/tests/access/Containerfile" -t "$ACCESS_IMAGE" "$root/deploy/tests/access" >/dev/null
 
 	# Токены двух владельцев и мастер-секрет — выдаёт сам бинарник; в вывод не идут.
-	local t1 t2 h1 h2 out
+	local t1 t2 t3 h1 h2 h3 out
 	out="$(podman run --rm --network=none "$SVC_IMAGE" -gen-token)"
 	t1="$(sed -n 's/^token: *//p' <<<"$out")"
 	h1="$(sed -n 's/^sha256: *//p' <<<"$out")"
 	out="$(podman run --rm --network=none "$SVC_IMAGE" -gen-token)"
 	t2="$(sed -n 's/^token: *//p' <<<"$out")"
 	h2="$(sed -n 's/^sha256: *//p' <<<"$out")"
-	if [ -z "$t1" ] || [ -z "$h1" ] || [ -z "$t2" ] || [ -z "$h2" ]; then die "токены не выданы"; fi
+	out="$(podman run --rm --network=none "$SVC_IMAGE" -gen-token)"
+	t3="$(sed -n 's/^token: *//p' <<<"$out")"
+	h3="$(sed -n 's/^sha256: *//p' <<<"$out")"
+	if [ -z "$t1" ] || [ -z "$h1" ] || [ -z "$t2" ] || [ -z "$h2" ] || [ -z "$t3" ] || [ -z "$h3" ]; then die "токены не выданы"; fi
+	# Токен владельца smoke — файлом (его читает smoke.py с тома ro, как на ops-ВМ), не в окружении и не в env-файле.
+	(umask 077 && printf '%s' "$t3" >"$work/private/smoke_token")
+	setfacl -m "u:$(host_uid "$tst_cuid"):r" "$work/private/smoke_token"
 	podman run --rm --network=none "$SVC_IMAGE" -gen-secret >"$work/private/master"
 	chmod 0600 "$work/private/master"
 	podman secret rm "$secret" >/dev/null 2>&1 || true
@@ -139,6 +147,8 @@ cmd_up() {
 
 	# Подпись студии первого владельца — с разметкой: листалка и форма обязаны вывести её текстом.
 	local studio1='Студия <b>x</b><script>'
+	# Сайт студии первого владельца (спека 005): view.json отдаёт его, у второго владельца сайта нет — ответ как в v0.1.1.
+	local site1='https://studio.example/albums'
 	cat >"$work/cfg/config.json" <<EOF
 {
   "listen": "unix:/run/albums-svc/http.sock",
@@ -147,8 +157,9 @@ cmd_up() {
   "secret_file": "/run/secrets/albums_master",
   "disk_reserve_bytes": 1048576,
   "owners": [
-    {"slug": "stand-a", "studio": "$studio1", "tokens": [{"name": "stand", "sha256": "$h1"}]},
-    {"slug": "stand-b", "studio": "Студия Два", "tokens": [{"name": "stand", "sha256": "$h2"}]}
+    {"slug": "stand-a", "studio": "$studio1", "site": "$site1", "tokens": [{"name": "stand", "sha256": "$h1"}]},
+    {"slug": "stand-b", "studio": "Студия Два", "tokens": [{"name": "stand", "sha256": "$h2"}]},
+    {"slug": "smoke", "studio": "Дымовая проверка", "quota_bytes": 1048576, "max_albums": 1, "tokens": [{"name": "smoke", "sha256": "$h3"}]}
   ]
 }
 EOF
@@ -160,6 +171,7 @@ SA_CA=/stand/root.crt
 SA_PUBLIC_BASE=$public_base
 SA_BROWSER_BASE=http://127.0.0.1:$port
 SA_STUDIO1=$studio1
+SA_SITE1=$site1
 SA_TOKEN1=$t1
 SA_TOKEN2=$t2
 EOF
@@ -246,6 +258,7 @@ https (матрица):  https://$domain (имя видно только кон�
 http для браузера: http://127.0.0.1:$(state_get port)  (public_base в конфиге: $(state_get public_base))
 рабочий каталог:  $work
 токены загрузки:  $work/private/env (SA_TOKEN1, SA_TOKEN2; файл 0600, в вывод не идут)
+токен smoke:      $work/private/smoke_token (владелец smoke: 1 альбом, 1 МиБ; для stand.sh smoke)
 журнал Caddy:     podman logs $cad
 журнал сервиса:   podman logs $svc
 корневой сертификат Caddy (tls internal): $work/root.crt
@@ -260,7 +273,8 @@ run_py() { # stage команда…
 	podman run --rm --network="container:$cad" --user "$tst_cuid:$tst_cuid" --read-only --tmpfs /tmp:rw,size=64m --cap-drop=ALL \
 		--security-opt=no-new-privileges --memory=512m --pids-limit=256 \
 		-v "$root/deploy/tests/access:/t:ro" -v "$work/out:/out:rw" -v "$work/root.crt:/stand/root.crt:ro" \
-		-v "$work/hosts:/etc/hosts:ro" --env-file "$work/private/env" -e "SA_STAGE=$stage" -e SA_OUT=/out \
+		-v "$work/hosts:/etc/hosts:ro" -v "$root/deploy/ops/smoke.py:/src/deploy/ops/smoke.py:ro" \
+		--env-file "$work/private/env" -e "SA_STAGE=$stage" -e SA_OUT=/out \
 		-e PYTHONDONTWRITEBYTECODE=1 -w /t "$ACCESS_IMAGE" "$@"
 }
 
@@ -309,10 +323,11 @@ cmd_test() {
 	podman restart -t 5 "$svc" >/dev/null
 	wait_health || die "сервис не поднялся после перезапуска"
 	rm -f "$work/out/"*
-	for name in main conformance damage down logs; do
+	for name in main smoke conformance damage down logs; do
 		echo "=== стенд: стадия $name ==="
 		case "$name" in
 		main) run_pytest main || fails=$((fails + 1)) ;;
+		smoke) cmd_smoke || fails=$((fails + 1)) ;; # smoke.py против Caddy стенда; id и токен не в выводе
 		conformance)
 			# Итог читает test_conformance_via_caddy.py в стадии logs; вывод Go-теста id и токенов не содержит.
 			rc=0
@@ -359,6 +374,60 @@ cmd_pytest() {
 	run_py "$stage" python -I -m pytest -p no:cacheprovider --no-header -rfE "$@" /t
 }
 
+# Дымовая проверка: тот же deploy/ops/smoke.py, что на ops-ВМ, против Caddy стенда (design 005 §5.3). Контейнер — как у
+# матрицы (сетевое пространство Caddy, /etc/hosts стенда, корень tls internal), но: токен только файлом ro на
+# /run/sa/token, домен — SA_DOMAIN, корень — SSL_CERT_FILE (системное хранилище читает OpenSSL), другого окружения нет.
+# Контейнер не --rm: после прогона `podman inspect` обязан не показать токен ни в Env, ни в команде.
+smoke_name=sa-stand-smoke
+run_smoke() { # команда smoke.py → вывод в $smoke_out, код выхода в $smoke_rc; токена в выводе и inspect нет
+	local tok insp
+	tok="$(cat "$work/private/smoke_token")"
+	podman rm -f "$smoke_name" >/dev/null 2>&1 || true
+	smoke_rc=0
+	smoke_out="$(podman run --name "$smoke_name" --network="container:$cad" --user "$tst_cuid:$tst_cuid" --read-only \
+		--tmpfs /tmp:rw,size=16m --cap-drop=ALL --security-opt=no-new-privileges --memory=128m --pids-limit=64 \
+		-v "$root/deploy/ops/smoke.py:/src/deploy/ops/smoke.py:ro" -v "$work/private/smoke_token:/run/sa/token:ro" \
+		-v "$work/root.crt:/stand/root.crt:ro" -v "$work/hosts:/etc/hosts:ro" \
+		-e "SA_DOMAIN=$domain" -e SSL_CERT_FILE=/stand/root.crt -e PYTHONDONTWRITEBYTECODE=1 \
+		"$ACCESS_IMAGE" python3 -I /src/deploy/ops/smoke.py "$1" 2>&1)" || smoke_rc=$?
+	insp="$(podman inspect "$smoke_name" 2>&1 || true)"
+	podman rm -f "$smoke_name" >/dev/null 2>&1 || true
+	case "$insp$smoke_out" in
+	*"$tok"*) echo "стенд: токен smoke виден в podman inspect или в выводе" >&2; return 1 ;;
+	esac
+	[ -n "$insp" ] || { echo "стенд: podman inspect пуст — проверка токена не состоялась" >&2; return 1; }
+	# Идентификатор (26 знаков) и токен (43) — строки от 22 знаков base64url: в выводе таких нет.
+	# Имена классов исключений («…Error») длинны, но безопасны: их вырезаем.
+	if sed -E 's/[A-Z][A-Za-z]*(Error|Exception|Exit|Interrupt)//g' <<<"$smoke_out" | grep -Eq '[A-Za-z0-9_-]{22,}'; then
+		echo "стенд: в выводе smoke.py длинная строка (id, токен или ссылка?)" >&2
+		return 1
+	fi
+}
+
+cmd_smoke() {
+	running || die "стенд не поднят: bash deploy/tests/stand.sh up"
+	[ "$(state_get mode)" = matrix ] || die "дымовая проверка идёт в режиме matrix: down, затем up matrix"
+	local smoke_out smoke_rc before after methods
+	run_smoke upload || return 1
+	echo "$smoke_out"
+	[ "$smoke_rc" = 0 ] || { echo "стенд: smoke upload — код $smoke_rc" >&2; return 1; }
+	run_smoke clean || return 1
+	echo "$smoke_out"
+	if [ "$smoke_rc" != 0 ] || ! grep -q 'убирать нечего' <<<"$smoke_out"; then
+		echo "стенд: smoke clean после upload не пуст (код $smoke_rc)" >&2
+		return 1
+	fi
+	# ls — только GET: по журналу Caddy (метод каждого запроса пишется, адрес и заголовки — нет).
+	before="$(podman logs "$cad" 2>&1 | wc -l)"
+	run_smoke ls || return 1
+	echo "$smoke_out"
+	[ "$smoke_rc" = 0 ] || { echo "стенд: smoke ls — код $smoke_rc" >&2; return 1; }
+	after="$(podman logs "$cad" 2>&1 | tail -n +"$((before + 1))")"
+	methods="$(grep -o '"method":"[A-Z]*"' <<<"$after" | sort -u | tr '\n' ' ')"
+	[ "$methods" = '"method":"GET" ' ] || { echo "стенд: ls сделал запросы не только GET: $methods" >&2; return 1; }
+	echo "ИТОГ: дымовая проверка прошла"
+}
+
 main() {
 	local cmd="${1:-}"
 	shift || true
@@ -369,9 +438,10 @@ main() {
 	test) cmd_test ;;
 	pytest) cmd_pytest "$@" ;;
 	conformance) running || die "стенд не поднят"; run_conformance ;;
+	smoke) cmd_smoke ;;
 	seed) cmd_seed seed ;;
 	edit) cmd_seed edit ;;
-	*) die "команда: up [matrix|browser] | test | pytest | conformance | seed | edit | env | down [--images]" ;;
+	*) die "команда: up [matrix|browser] | test | pytest | conformance | smoke | seed | edit | env | down [--images]" ;;
 	esac
 }
 

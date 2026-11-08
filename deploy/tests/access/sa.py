@@ -22,6 +22,7 @@ HOST = os.environ["SA_HOST"]
 CA = os.environ["SA_CA"]
 PUBLIC_BASE = os.environ["SA_PUBLIC_BASE"]
 STUDIO1 = os.environ["SA_STUDIO1"]
+SITE1 = os.environ["SA_SITE1"]  # сайт первого владельца; у второго его нет
 TOKEN1 = os.environ["SA_TOKEN1"]
 TOKEN2 = os.environ["SA_TOKEN2"]
 STAGE = os.environ.get("SA_STAGE", "main")

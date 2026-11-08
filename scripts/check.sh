@@ -96,8 +96,8 @@ check_web_syntax() {
 # Совместимость со строгим CSP (default-src 'self', без unsafe-inline): inline-скрипты и обработчики
 # в атрибутах он запрещает; innerHTML — XSS-сток (подписи разворотов приходят из сети);
 # внешние ресурсы выдают клиенту адрес листалки третьей стороне через Referer и запросы.
-# Исключение одно — ссылка «Исходный код» на публичный репозиторий (AGPL-3.0 §13; «да» владельца 03.11.2026):
-# переход по клику с rel="noreferrer", ничего не загружает; любой другой внешний адрес — по-прежнему ошибка.
+# Исключений нет: ссылка «Исходный код» убрана в v0.1.2 (спека 005), а ссылка на сайт студии строится
+# в листалке из view.json и в HTML не попадает.
 check_web_csp() {
   local mask pattern what
   while IFS=$'\t' read -r mask pattern what; do
@@ -106,7 +106,7 @@ check_web_csp() {
   done <<'EOF'
 *.html	<script(?![^>]*\bsrc=)[^>]*>\s*\S	inline <script> — вынести в файл и подключить src=
 *.html	\son[a-z]+\s*=	обработчик в атрибуте — нужен addEventListener
-*.html	(src|href)\s*=\s*["']https?://(?!github\.com/IliaSA101/sosninaalbums-cloud["'])	внешний ресурс — всё своё, с того же источника
+*.html	(src|href)\s*=\s*["']https?://	внешний ресурс — всё своё, с того же источника
 *.html	<style[\s>]	inline <style> — вынести в .css (CSP без unsafe-inline)
 *.js	\b(innerHTML|outerHTML|insertAdjacentHTML)\b	запись HTML строкой — нужен textContent или createElement
 *.js	\b(eval|Function)\s*\(	исполнение строки — запрещено CSP
@@ -153,6 +153,8 @@ fi
 if [ -d web ]; then
   if command -v node >/dev/null 2>&1; then
     step 'синтаксис web' --empty-out check_web_syntax
+    # Тесты листалки: колесо и тачпад, правило адреса сайта на общем наборе site_cases.json (третье из трёх мест).
+    step 'тесты web' node --test 'web/viewer/*.test.mjs'
   else
     skip 'синтаксис web (node не найден)'
   fi

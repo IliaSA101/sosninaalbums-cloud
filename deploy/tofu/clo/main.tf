@@ -54,9 +54,12 @@ resource "clo_compute_instance" "srv" {
 }
 
 # Привязка зависит от сервера: при --replace-server tofu сначала снимает её (адрес остаётся), потом удаляет сервер.
+# is_primary не задаётся (спека 005, 005-12): при ответе 422 на «сделать основным» провайдер выходит из Create до SetId —
+# адрес уже привязан в API, а привязки в state нет, и первый же план с удалением сервера унёс бы публичный адрес.
+# Единственный адрес сервера и так основной (Computed). Защита от удаления сервера без привязки в state — проверка
+# сохранённого плана в provision.sh apply (ops/plan.sh), не этот файл.
 resource "clo_network_ip_attach" "main" {
   address_id  = clo_network_ip.main.id
   entity_name = "server"
   entity_id   = clo_compute_instance.srv.id
-  is_primary  = true
 }

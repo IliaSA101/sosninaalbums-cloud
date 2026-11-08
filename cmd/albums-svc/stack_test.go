@@ -49,7 +49,8 @@ type stack struct {
 	st   *store.Store
 }
 
-func newStack(t *testing.T) *stack {
+// newStack — mutate правит список владельцев конфига до разбора (например, добавляет site).
+func newStack(t *testing.T, mutate ...func(owners []any)) *stack {
 	t.Helper()
 	s := &stack{t: t, log: &syncBuf{}, data: filepath.Join(t.TempDir(), "data")}
 	var owners []any
@@ -64,6 +65,9 @@ func newStack(t *testing.T) *stack {
 			"quota_bytes": 64 << 20, "max_albums": 100,
 			"tokens": []any{map[string]any{"name": "t", "sha256": sum}},
 		})
+	}
+	for _, m := range mutate {
+		m(owners)
 	}
 	raw, err := json.Marshal(map[string]any{
 		"listen": "unix:/run/albums-svc/http.sock", "public_base": "https://albums.test", "data_dir": "/data", "secret_file": "/run/secrets/x",

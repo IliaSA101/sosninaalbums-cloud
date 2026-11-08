@@ -8,6 +8,11 @@
 - name: Пакеты и часы
   ansible.builtin.import_tasks: packages.yml
 
+# LLMNR и mDNS выключаются сразу после пакетов и до остального: слушатель 5355 на всех адресах открыт, пока работает
+# systemd-resolved с настройками по умолчанию (спека 005, 005-11).
+- name: LLMNR и mDNS выключены (systemd-resolved)
+  ansible.builtin.import_tasks: resolved.yml
+
 - name: Администратор, ключи, пароль и пробный вход
   ansible.builtin.import_tasks: admin.yml
 

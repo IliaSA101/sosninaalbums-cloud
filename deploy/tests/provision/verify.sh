@@ -8,7 +8,7 @@
 #   verify_nft   verify_nft_ports (22, 80, 443 — да; 8080, 9999 — нет, при включённом слушателе),
 #                verify_nft_no_iface_exceptions, verify_nft_reload_only, verify_listeners
 #                (должна ловить слушатель 8080, а без него — проходить)
-#   verify_host  verify_users, verify_upgrades, verify_journald, verify_guest_agent, verify_cloud_init
+#   verify_host  verify_users, verify_resolved (LLMNR и mDNS выключены), verify_upgrades, verify_journald, verify_guest_agent, verify_cloud_init
 #
 # Положительные проверки идут раньше отрицательных: неудачные входы увеличивают штраф источника
 # (PerSourcePenalties), поэтому отрицательные — из отдельного контейнера со своим адресом.
@@ -174,6 +174,6 @@ step_verify_nft() {
 step_verify_host() {
 	need_target || return 1
 	stand_secrets || return 1
-	ansible_verify "verify_users verify_upgrades verify_journald verify_guest_agent verify_cloud_init" \
-		verify_users,verify_upgrades,verify_journald,verify_guest_agent,verify_cloud_init
+	ansible_verify "verify_users verify_resolved verify_upgrades verify_journald verify_guest_agent verify_cloud_init" \
+		verify_users,verify_resolved,verify_upgrades,verify_journald,verify_guest_agent,verify_cloud_init
 }

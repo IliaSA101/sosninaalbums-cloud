@@ -37,4 +37,4 @@ reset_known
 drive "/tmp/sc.yes" SA_BACKUP_DIR="$BK"-e -- forget-host
 check "свежесть в provision.sh: раскатки не было (нет deployed-commit) — предупреждения нет" bash -c '! grep -q "проверенной копии младше 7 дней нет" /tmp/out.txt'
 mv /tmp/deployed-commit.keep "$inv/deployed-commit"
-check "forget-host: ключ хоста удалён из known_hosts" bash -c '! grep -q "^127.0.0.1 " "$1"' _ "$inv/known_hosts"
+check "forget-host: ключ хоста удалён из known_hosts" bash -c '! grep -q "^$2 " "$1"' _ "$inv/known_hosts" "$CLI_IP"

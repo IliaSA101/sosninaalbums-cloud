@@ -3,7 +3,7 @@
 Запуск (в образе проверок, из tofu_static.sh): python3 -I tofu_static.py <каталог deploy/tofu/clo> <корень deploy>
 Состав каталога — только *.tf, tofu-entry.sh, .terraform.lock.hcl и tests/*.tftest.hcl (дерево целиком, без
 симлинков). Конфигурация: ephemeral у токена, validation у api_url, prevent_destroy у адреса, ignore_changes и
-нет addresses/password у сервера, ключ только импортом, нет провижинеров, terraform_data, null_resource,
+нет addresses/password у сервера, нет is_primary у привязки, ключ только импортом, нет провижинеров, terraform_data, null_resource,
 external, http, чужих провайдеров и модулей с нелокальным source; lock-файл — только clo; дайджест образа
 tofu — один в ops/images.env и в стенде. Затем самопроверка: каждое правило обязано сработать на мутации
 настоящего кода (в том числе на обходах: *.tofu, *.tf.json, подкаталог, heredoc с /* */, метки без кавычек).
@@ -138,6 +138,10 @@ def check(tree, lock, images_env, lib_sh, example_tfvars):
                 for bad in ("addresses", "password"):
                     if re.search(r"(?m)^[ \t]*%s[ \t]*=" % bad, body):
                         err.append("clo_compute_instance: поле %s запрещено (адрес удалился бы с сервером / пароль лёг бы в state)" % bad)
+            # Спека 005, 005-12: is_primary при 422 оставляет адрес привязанным в API без записи в state — защита плана
+            # apply (ops/plan.sh) от этого не спасла бы первую привязку.
+            if kind == "resource" and t == "clo_network_ip_attach" and re.search(r"(?m)^[ \t]*is_primary[ \t]*=", body):
+                err.append("clo_network_ip_attach: is_primary запрещён (422 оставляет привязку в API без записи в state, 005-12)")
             if kind == "resource" and t == "clo_compute_keypair" and attr(body, "public_key") is None:
                 err.append("clo_compute_keypair без public_key: закрытый ключ ляжет в state")
         if kind == "provider" and labels != ["clo"]:
@@ -213,7 +217,20 @@ def mutations():
         ("addresses у сервера", "main.tf", ins("addresses = []"), {}, "addresses"),
         ("password у сервера", "main.tf", ins('password = "x"'), {}, "password"),
         ("keypair без public_key", "main.tf", ("  public_key = var.ssh_public_key\n", ""), {}, "public_key"),
-        ("провижинер", "main.tf", ("is_primary  = true", 'is_primary  = true\n  provisioner "local-exec" {\n  }'), {}, "provisioner"),
+        (
+            "провижинер",
+            "main.tf",
+            ("entity_id   = clo_compute_instance.srv.id", 'entity_id   = clo_compute_instance.srv.id\n  provisioner "local-exec" {\n  }'),
+            {},
+            "provisioner",
+        ),
+        (
+            "is_primary в привязке",
+            "main.tf",
+            ("entity_id   = clo_compute_instance.srv.id", "entity_id   = clo_compute_instance.srv.id\n  is_primary  = true"),
+            {},
+            "is_primary",
+        ),
         ("terraform_data", "main.tf", ap('resource "terraform_data" "x" {\n}'), {}, "terraform_data"),
         ("terraform_data, метки без кавычек", "main.tf", ap("resource terraform_data x {\n}"), {}, "terraform_data"),
         ("data external", "main.tf", ap('data "external" "x" {\n}'), {}, "external"),

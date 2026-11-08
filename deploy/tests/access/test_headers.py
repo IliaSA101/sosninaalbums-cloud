@@ -101,7 +101,8 @@ def test_429_headers():
 def test_view_json_and_manifest_json(w):
     v = sa.get(w.open.path("view.json"))
     assert v.status == 200 and v.one("content-type") == "application/json"
-    assert json.loads(v.body) == {"studio": sa.STUDIO1}
+    # Владелец с сайтом (спека 005): ровно два поля, точное равенство; сайт — значение из конфига, не из запроса.
+    assert json.loads(v.body) == {"studio": sa.STUDIO1, "site": sa.SITE1}
     m = sa.get(w.open.path("manifest.json"))
     assert m.status == 200 and m.one("content-type") == "application/json"
     assert m.one("content-security-policy") == checks.SANDBOX_CSP and m.one("cache-control") == checks.CACHE_PAGE
@@ -110,7 +111,8 @@ def test_view_json_and_manifest_json(w):
     assert all(p.get("file", "").endswith(".jpg") for p in man["pages"] if not p.get("blank"))
     assert "?" not in m.text(), "в manifest.json нет строки запроса"
     other = sa.get(sa_api.upload(make_book("Второго владельца"), owner=sa_api.OWNER2).path("view.json"))
-    assert json.loads(other.body) == {"studio": "Студия Два"}
+    # Владелец без сайта: ключа site нет совсем (omitempty), ответ как в v0.1.1 — старые кэши листалки не меняются.
+    assert json.loads(other.body) == {"studio": "Студия Два"} and b'"site"' not in other.body
 
 
 def test_image_etag_range_head(w):

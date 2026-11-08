@@ -235,3 +235,15 @@ guard_tofu_files() {
 		refuse "в deploy/tofu/clo/tests допустимы только файлы *.tftest.hcl"
 	fi
 }
+
+# env_name_ok domain|user <значение>: значения provision.env идут в -e контейнеров и в аргументы — только ASCII. В UTF-8-
+# локали диапазон `[a-z0-9]` в `[[ =~ ]]` принимает и латинскую e с акутом, и арабско-индийские цифры (аудит И7c), поэтому LC_ALL=C и
+# перечисление знаков явными классами, как в hosts_check_ip (ops/hosts.sh).
+env_name_ok() {
+	local LC_ALL=C l=abcdefghijklmnopqrstuvwxyz d=0123456789
+	case $1 in
+		domain) [[ $2 =~ ^[${l}${d}]([${l}${d}.-]*[${l}${d}])?$ ]] ;;
+		user) [[ $2 =~ ^[${l}_][${l}${d}_-]{0,30}$ ]] ;;
+		*) return 2 ;;
+	esac
+}
