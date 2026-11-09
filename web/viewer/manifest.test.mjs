@@ -1,7 +1,7 @@
 // Проверка manifest.js: `node --test web/viewer/manifest.test.mjs`.
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { clip, counterText, displayPages, indexOfPage, parseManifest, sameBook, visibleIndexes, wantedIndexes } from './manifest.js'
+import { clip, counterParts, fillsPage, displayPages, indexOfPage, parseManifest, sameBook, visibleIndexes, wantedIndexes } from './manifest.js'
 
 const hash = (c) => c.repeat(64) + '.jpg'
 // Обложка, форзац (белая стр. 2), разворот 3–4, белая 5, задняя 6: K = 2N + 2, N = 2.
@@ -60,10 +60,34 @@ test('подписи и видимые страницы', () => {
   assert.deepEqual(visibleIndexes(m, l, 1, false), [1, 2])
   assert.deepEqual(visibleIndexes(m, l, 5, false), [5])
   assert.deepEqual(visibleIndexes(m, l, 2, true), [2])
-  assert.equal(counterText(m, [l[0]]), 'Обложка')
-  assert.equal(counterText(m, [l[5]]), 'Задняя обложка')
-  assert.equal(counterText(m, [l[1], l[2]]), '1–2 из 4')
-  assert.equal(counterText(m, [l[2]]), '2 из 4')
+  // Подпись из двух строк (вид как у референса, И8): обложки — слова, середина — «k / N» с подписью по режиму.
+  assert.deepEqual(counterParts(m, [l[0]], false), { main: 'Обложка', sub: 'листайте' })
+  assert.deepEqual(counterParts(m, [l[5]], false), { main: 'Конец', sub: 'задняя обложка' })
+  assert.deepEqual(counterParts(m, [l[1], l[2]], false), { main: '1 / 2', sub: 'разворот' })
+  assert.deepEqual(counterParts(m, [l[3], l[4]], false), { main: '2 / 2', sub: 'разворот' })
+  assert.deepEqual(counterParts(m, [l[2]], true), { main: '2 / 4', sub: 'страница' })
+  assert.deepEqual(counterParts(m, [l[0]], true), { main: 'Обложка', sub: 'листайте' })
+  assert.deepEqual(counterParts(m, [l[5]], true), { main: 'Конец', sub: 'задняя обложка' })
+})
+
+test('лист заполняется картинкой, только если пропорция почти та же (до 3 %)', () => {
+  // Обложка 1531×1531 на листе 297×299 (расхождение 0,7 %) — заполняем; страница 1590×1601 — тоже.
+  assert.equal(fillsPage(1531, 1531, 297 / 299), true)
+  assert.equal(fillsPage(1590, 1601, 297 / 299), true)
+  assert.equal(fillsPage(1000, 1030, 1), true) // 3 % — граница включена
+  assert.equal(fillsPage(1000, 1040, 1), false) // 4 % — не режем содержимое
+  assert.equal(fillsPage(1500, 1000, 1), false) // другая пропорция совсем
+  assert.equal(fillsPage(0, 0, 1), false) // размеров в манифесте нет — contain
+  assert.equal(fillsPage(NaN, 100, 1), false)
+  const r = raw()
+  r.pages[0].w = 1531
+  r.pages[0].h = 1531
+  r.pages[2].w = 2000
+  r.pages[2].h = 1000
+  r.pages[3].w = -5 // мусор не ломает разбор
+  r.pages[3].h = 'x'
+  const m = parseManifest(r)
+  assert.deepEqual(m.pages.map((p) => p.fill), [true, false, false, false, false, false])
 })
 
 test('ленивая загрузка и сравнение книг', () => {
@@ -84,8 +108,9 @@ test('без обложки: пары с первой страницы, один
   assert.equal(m.cover, false)
   assert.deepEqual(visibleIndexes(m, m.pages, 0, false), [0, 1])
   assert.deepEqual(visibleIndexes(m, m.pages, 2, false), [2, 3])
-  assert.equal(counterText(m, [m.pages[0], m.pages[1]]), '1–2 из 4')
-  assert.equal(counterText(m, [m.pages[3]]), '4 из 4')
+  assert.deepEqual(counterParts(m, [m.pages[0], m.pages[1]], false), { main: '1 / 2', sub: 'разворот' })
+  assert.deepEqual(counterParts(m, [m.pages[3]], false), { main: '2 / 2', sub: 'разворот' }) // без обложки нет слов «Конец»
+  assert.deepEqual(counterParts(m, [m.pages[3]], true), { main: '4 / 4', sub: 'страница' })
 })
 
 test('clip режет по знакам, а не по половинкам эмодзи', () => {

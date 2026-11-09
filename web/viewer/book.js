@@ -14,11 +14,28 @@ export function stageSize(stage) {
   }
 }
 
+// MAX_SPREAD_W — предел ширины разворота: две страницы по ~1600 px; шире картинки только мылились бы, а для
+// StPageFlip (maxWidth 4000 на страницу) это запас.
+export const MAX_SPREAD_W = 3200
+
 // fitSize — самый большой прямоугольник книги нужной пропорции внутри сцены: разворот — две страницы в ряд.
 export function fitSize(stageW, stageH, ratio, portrait) {
   const aspect = portrait ? ratio : ratio * 2
-  const w = Math.max(1, Math.min(stageW, stageH * aspect))
+  const w = Math.max(1, Math.min(stageW, stageH * aspect, portrait ? Infinity : MAX_SPREAD_W))
   return { w, h: w / aspect }
+}
+
+// Доля ширины разворота, на которую сдвигается книга, чтобы одиночная обложка стояла по центру сцены, как у
+// закрытой книги. StPageFlip с showCover ставит переднюю обложку в правую половину разворота, заднюю — в левую.
+const COVER_SHIFT = 0.25
+
+// coverShift — сдвиг книги (доля ширины разворота) для разворота spread (индексы страниц; null — неизвестен):
+// передняя обложка одна справа → влево, задняя одна слева → вправо, остальное — на месте. Вертикально
+// страница и так одна по центру, без обложки одиноких страниц нет.
+export function coverShift(cover, portrait, count, spread) {
+  if (!cover || portrait || count < 2 || !spread || spread.length !== 1) return 0
+  if (spread[0] === 0) return -COVER_SHIFT
+  return spread[0] === count - 1 ? COVER_SHIFT : 0
 }
 
 // mountBook собирает книгу в stage. opts: St, stage, list (страницы показа), ratio, cover, portrait, start (индекс),
@@ -28,6 +45,7 @@ export function mountBook(opts) {
   const { St, stage, list, ratio, cover, portrait, reduced } = opts
   const holder = document.createElement('div')
   holder.className = 'book-holder'
+  if (!portrait) holder.classList.add('book-spread') // корешок рисуем только у разворота: одиночная страница — не разворот
   const block = document.createElement('div')
   block.className = 'book'
   holder.appendChild(block)
@@ -56,8 +74,8 @@ export function mountBook(opts) {
     usePortrait: portrait,
     startPage: opts.start,
     showCover: cover,
-    maxShadowOpacity: 0.4,
-    flippingTime: reduced ? 200 : 800,
+    maxShadowOpacity: 0.35,
+    flippingTime: reduced ? 200 : 900,
     showPageCorners: !reduced,
     mobileScrollSupport: false,
     swipeDistance: 30,
@@ -69,8 +87,17 @@ export function mountBook(opts) {
     endBuild()
   }
   ensure(opts.start)
-  flip.on('flip', (e) => sync(e.data))
-  flip.on('init', (e) => sync(e.data.page))
+  const slide = coverSlide()
+  slide.settle(true) // сразу, не дожидаясь init: иначе кадр-другой обложка стояла бы справа
+  flip.on('flip', (e) => {
+    slide.settle()
+    sync(e.data)
+  })
+  flip.on('init', (e) => {
+    slide.settle(true)
+    sync(e.data.page)
+  })
+  flip.on('changeState', (e) => slide.state(e.data))
 
   function fit() {
     const room = stageSize(stage)
@@ -80,11 +107,88 @@ export function mountBook(opts) {
     return s
   }
 
+  // coverSlide двигает holder по горизонтали вместе с переворотом обложки. Книгу сдвигаем transform'ом у holder:
+  // StPageFlip считает координаты мыши и касаний через getBoundingClientRect, так что клики по уголкам и свайп
+  // остаются точными; .stage обрезает по краю, но обложка в центре и её тень внутри сцены. Сдвиг привязан к
+  // положению страницы (calc.getPosition), а не ко времени: так он идёт ровно с переворотом, в том числе при
+  // перетаскивании пальцем и отмене жеста. Без обложки и вертикально сдвига нет; при prefers-reduced-motion
+  // (reduced) покадрового движения нет: книга встаёт на место сразу.
+  function coverSlide() {
+    const live = cover && !portrait
+    let tracking = false
+    let queued = false // кадр уже заказан: второй не ставим, иначе остановка и новый жест удвоили бы цикл
+    let route = null // {from, to} — доли сдвига начала и конца текущего переворота
+    const spreads = () => {
+      const pc = flip.getPageCollection()
+      return { all: pc.getSpread(), at: pc.getCurrentSpreadIndex() }
+    }
+    const shiftAt = (all, i) => coverShift(cover, portrait, list.length, all[i])
+    // Тень книги — filter: drop-shadow у holder (viewer.css): она идёт по видимым пикселям и не ложится под пустую
+    // половину разворота, поэтому от сдвига ничего больше не зависит.
+    const place = (frac, glide) => {
+      holder.classList.toggle('book-glide', glide)
+      holder.style.transform = frac === 0 ? '' : `translateX(${frac * 100}%)`
+    }
+    const rest = (glide) => {
+      const { all, at } = spreads()
+      place(shiftAt(all, at), glide)
+    }
+    // routeOf — откуда и куда едет книга: направление знает только расчёт переворота, он появляется чуть позже
+    // смены состояния.
+    const routeOf = (calc) => {
+      const { all, at } = spreads()
+      return { from: shiftAt(all, at), to: shiftAt(all, at + (calc.getDirection() === 0 ? 1 : -1)) }
+    }
+    const schedule = () => {
+      if (queued) return
+      queued = true
+      requestAnimationFrame(frame)
+    }
+    const frame = () => {
+      queued = false
+      tick()
+    }
+    const tick = () => {
+      if (!tracking || destroyed) return
+      schedule()
+      const calc = flip.getFlipController().getCalculation()
+      if (!calc || !calc.getPosition()) return
+      route = route || routeOf(calc)
+      const half = flip.getRender().getRect().pageWidth
+      // x страницы: pageWidth — лежит, -pageWidth — перевёрнута (в обе стороны листания).
+      const t = Math.min(1, Math.max(0, (half - calc.getPosition().x) / (2 * half)))
+      place(route.from + (route.to - route.from) * t, false)
+    }
+    return {
+      // state — события состояния StPageFlip: покадровое слежение только пока страница в движении.
+      // fold_corner (подгиб уголка при наведении) — не переворот.
+      state(s) {
+        if (!live || reduced || destroyed) return
+        const moving = s === 'flipping' || s === 'user_fold'
+        if (moving && !tracking) {
+          tracking = true
+          route = null
+          schedule()
+        } else if (!moving && tracking) {
+          tracking = false
+          rest(false)
+        }
+      },
+      // settle — страница встала (переворот закончен, переход Home/End, первая сборка). Первая сборка (instant)
+      // и конец покадрового переворота встают сразу; плавный съезд — только при переходе без листа.
+      settle(instant) {
+        if (!live || destroyed) return
+        rest(!instant && !reduced && !tracking)
+      },
+    }
+  }
+
   function pageElement(p, i) {
     const el = document.createElement('div')
     el.className = 'page'
     byN.set(p.n, el)
     if (p.role !== 'page') el.dataset.density = 'hard' // обложка — твёрдая
+    if (p.fill) el.classList.add('page-fill') // пропорция картинки почти как у листа: заполняем, без белых полос
     if (p.blank) {
       el.classList.add('page-blank')
       return el
@@ -124,6 +228,10 @@ export function mountBook(opts) {
     minWidth,
     holderWidth: () => holder.offsetWidth,
     fit,
+    // update — пересчёт StPageFlip после смены размера без события resize (полный экран).
+    update: () => {
+      if (!destroyed) flip.update()
+    },
     current: () => flip.getCurrentPageIndex(),
     next: () => flip.flipNext(),
     prev: () => flip.flipPrev(),

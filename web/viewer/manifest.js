@@ -4,6 +4,8 @@
 
 const SCHEMA = 1
 const MAX_PAGES = 1000 // контракт — 300, запас на рост; больше — явно не наш манифест
+const FILL_TOLERANCE = 0.03 // картинка заполняет лист (cover), если её пропорция отличается от листа не больше чем на 3 %
+const MAX_SIDE = 100000
 const FILE_RE = /^[0-9a-f]{64}\.(jpg|webp)$/
 
 // clip — не больше n знаков (по кодовым точкам: slice по UTF-16 рвёт эмодзи пополам).
@@ -15,6 +17,14 @@ export class ManifestError extends Error {}
 
 function bad(why) {
   throw new ManifestError(why)
+}
+
+// fillsPage — заполнять ли лист картинкой целиком (object-fit: cover). Обложки выгружаются чуть другой пропорции,
+// чем страницы (доли процента); contain оставил бы на них полосы бумаги. При заметной разнице картинку не режем.
+// w и h — размеры картинки из манифеста (нет или не число — 0, тогда contain).
+export function fillsPage(w, h, ratio) {
+  if (!(w > 0 && h > 0 && ratio > 0)) return false
+  return Math.abs(w / h / ratio - 1) <= FILL_TOLERANCE
 }
 
 // parseManifest — манифест → {title, cover, ratio, pages}; всё лишнее отбрасывается.
@@ -38,7 +48,9 @@ export function parseManifest(raw) {
     const blank = p.blank === true
     if (blank && p.role !== 'page') bad('белой бывает только страница')
     if (!blank && !(typeof p.file === 'string' && FILE_RE.test(p.file))) bad('имя файла')
-    return { n: p.n, role: p.role, blank, file: blank ? '' : p.file }
+    const side = (v) => (Number.isFinite(v) && v > 0 && v <= MAX_SIDE ? v : 0)
+    const fill = !blank && fillsPage(side(p.w), side(p.h), w / h)
+    return { n: p.n, role: p.role, blank, file: blank ? '' : p.file, fill }
   })
   if (cover !== (pages[0].role === 'front' && pages[k - 1].role === 'back')) bad('обложка и роли не сходятся')
   const title = typeof raw.title === 'string' ? clip(raw.title, 200) : ''
@@ -70,17 +82,18 @@ export function visibleIndexes(m, list, idx, portrait) {
   return idx + 1 <= last ? [idx, idx + 1] : [idx]
 }
 
-// counterText — подпись «3–4 из 60»: обложка в счёт не входит, белые листы входят (это страницы книги).
-export function counterText(m, shown) {
+// counterParts — подпись под книгой из двух строк: крупная и мелкая. Обложки в счёт не входят, белые листы входят
+// (это страницы книги). Альбомом считаем развороты («2 / 30» — «разворот»), вертикально — страницы.
+export function counterParts(m, shown, portrait) {
   const first = shown[0]
   const last = shown[shown.length - 1]
-  if (first.role === 'front') return 'Обложка'
-  if (last.role === 'back') return 'Задняя обложка'
+  if (first.role === 'front') return { main: 'Обложка', sub: 'листайте' }
+  if (last.role === 'back') return { main: 'Конец', sub: 'задняя обложка' }
   const shift = m.cover ? 1 : 0
   const total = m.pages.length - 2 * shift
   const a = first.n - shift
-  const b = last.n - shift
-  return a === b ? `${a} из ${total}` : `${a}–${b} из ${total}`
+  if (portrait) return { main: `${a} / ${total}`, sub: 'страница' }
+  return { main: `${Math.ceil(a / 2)} / ${Math.ceil(total / 2)}`, sub: 'разворот' }
 }
 
 // wantedIndexes — какие страницы держать загруженными: текущие, соседние развороты в обе стороны.

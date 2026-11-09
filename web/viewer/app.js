@@ -2,10 +2,11 @@
 // ведёт управление. Доступ (пароль, срок) проверяет сервер — здесь только показ. Всё из манифеста идёт в
 // textContent и в src по проверенному шаблону; ничего не исполняется и не уводит на другой адрес.
 import { mountBook, stageSize } from './book.js'
+import { canFullscreen, toggleFullscreen } from './fullscreen.js'
 import { loadFlipLib } from './lib.js'
 import {
   clip,
-  counterText,
+  counterParts,
   displayPages,
   indexOfPage,
   ManifestError,
@@ -18,7 +19,18 @@ import { createWheel, isZoomed } from './wheel.js'
 
 const LIB_URL = new URL('vendor/page-flip-2.0.7.browser.js', import.meta.url).href
 const $ = (id) => document.getElementById(id)
-const el = { title: $('title'), studio: $('studio'), stage: $('stage'), status: $('status'), prev: $('prev'), next: $('next'), counter: $('counter') }
+const el = {
+  title: $('title'),
+  studio: $('studio'),
+  stage: $('stage'),
+  status: $('status'),
+  prev: $('prev'),
+  next: $('next'),
+  counter: $('counter'),
+  sub: $('counter-sub'),
+  full: $('full'),
+  rotate: $('rotate'),
+}
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 const wheel = createWheel()
 
@@ -53,6 +65,7 @@ function build(startN) {
   if (state.book) state.book.destroy()
   const portrait = wantPortrait(state.m)
   state.list = displayPages(state.m, portrait)
+  el.rotate.hidden = !portrait // подсказка про поворот — только пока книга вертикальная
   state.book = mountBook({
     St: state.St,
     stage: el.stage,
@@ -73,7 +86,9 @@ function show(idx) {
   if (!book || list.length === 0) return
   state.idx = idx
   const at = visibleIndexes(m, list, idx, book.portrait)
-  el.counter.textContent = counterText(m, at.map((i) => list[i]))
+  const text = counterParts(m, at.map((i) => list[i]), book.portrait)
+  el.counter.textContent = text.main
+  el.sub.textContent = text.sub
   el.prev.disabled = at[0] === 0
   el.next.disabled = at[at.length - 1] === list.length - 1
 }
@@ -195,6 +210,19 @@ async function start() {
   // До первой сборки: обработчик resize у StPageFlip ставится при сборке и должен идти после нашего, который
   // сперва подгоняет размер книги под окно.
   window.addEventListener('resize', onResize)
+  // Полный экран открывает весь документ, а не сцену: подписи и кнопки остаются на месте. После смены режима окно
+  // меняет размер: если resize не пришёл, книгу подгоняем и пересчитываем сами (кадр спустя — размеры уже новые).
+  if (canFullscreen(document, document.documentElement)) {
+    el.full.hidden = false
+    el.full.addEventListener('click', () => toggleFullscreen(document, document.documentElement))
+    document.addEventListener('fullscreenchange', () => {
+      el.full.setAttribute('aria-label', document.fullscreenElement ? 'Выйти из полного экрана' : 'На весь экран')
+      window.requestAnimationFrame(() => {
+        onResize()
+        if (state.book) state.book.update()
+      })
+    })
+  }
   build(1)
 }
 
