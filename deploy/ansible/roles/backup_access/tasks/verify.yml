@@ -1,0 +1,173 @@
+---
+# Проверки роли (design 002 §11, §12), ничего не меняют. verify_backup — файлы, пользователь, ключ забора,
+# сокет и служба в том виде, как их видит systemd; verify_restore_rejects — отказы sa-restore на плохих архивах.
+# Поток через сокет (verify_backup_stream) нужен data/ от задач albums-runtime — только в CI.
+- name: "Проверка verify_backup: файлы (checksum, владелец, права)"
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    checksum_algorithm: sha256
+  register: backup_access_files
+  loop:
+    - dest: "{{ backup_access_stream_dest }}"
+      sum: "{{ lookup('ansible.builtin.file', backup_access_stream_src, rstrip=false) | hash('sha256') }}"
+      mode: "0755"
+    - dest: "{{ backup_access_restore_dest }}"
+      sum: "{{ lookup('ansible.builtin.file', backup_access_restore_src, rstrip=false) | hash('sha256') }}"
+      mode: "0755"
+    - {dest: "{{ backup_access_recipients_dest }}", sum: "{{ (backup_age_recipient ~ '\n') | hash('sha256') }}", mode: "0644"}
+    - {dest: "{{ backup_access_authorized_keys }}", sum: "{{ (backup_access_key_line ~ '\n') | hash('sha256') }}", mode: "0644"}
+    - dest: "{{ backup_access_socket_dest }}"
+      sum: "{{ lookup('ansible.builtin.template', backup_access_socket_src, rstrip=false) | hash('sha256') }}"
+      mode: "0644"
+    - dest: "{{ backup_access_service_dest }}"
+      sum: "{{ lookup('ansible.builtin.template', backup_access_service_src, rstrip=false) | hash('sha256') }}"
+      mode: "0644"
+  loop_control:
+    label: "{{ item.dest }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: файлы принадлежат root и совпадают с репозиторием раскатки"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists and item.stat.isreg
+      - item.stat.checksum == item.item.sum
+      - item.stat.pw_name == 'root' and item.stat.gr_name == 'root'
+      - item.stat.mode == item.item.mode
+    quiet: true
+    fail_msg: "{{ item.item.dest }}: содержимое, владелец или права расходятся с design §5, §11"
+  loop: "{{ backup_access_files.results }}"
+  loop_control:
+    label: "{{ item.item.dest }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: дом, .ssh и каталог возврата"
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  register: backup_access_dirs
+  loop:
+    - {path: "{{ backup_access_home }}", owner: root, mode: "0755"}
+    - {path: "{{ backup_access_home }}/.ssh", owner: root, mode: "0755"}
+    - {path: "{{ backup_access_restore_dir }}", owner: "{{ admin_user }}", mode: "0700"}
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: каталоги принадлежат root (дом бэкапа) и администратору (каталог возврата)"
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir and item.stat.pw_name == item.item.owner and item.stat.mode == item.item.mode
+    quiet: true
+    fail_msg: "{{ item.item.path }}: владелец или права не как в design §11"
+  loop: "{{ backup_access_dirs.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: пользователь бэкапа"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ backup_user }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: shadow и группы пользователя бэкапа"
+  ansible.builtin.getent:
+    database: shadow
+    key: "{{ backup_user }}"
+  register: backup_access_shadow
+  no_log: true
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: группы пользователя бэкапа"
+  ansible.builtin.command:
+    argv: [id, -nG, "{{ backup_user }}"]
+  register: backup_access_groups
+  changed_when: false
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: subuid пользователя бэкапа"
+  ansible.builtin.command:
+    argv: [grep, -c, -E, "^{{ backup_user }}:", /etc/subuid, /etc/subgid]
+  register: backup_access_subid
+  changed_when: false
+  failed_when: backup_access_subid.rc not in [0, 1]
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: оболочка /bin/sh, пароль «*», только своя группа, без subuid"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.getent_passwd[backup_user][4] == backup_access_home
+      - ansible_facts.getent_passwd[backup_user][5] == '/bin/sh'
+      - backup_access_shadow.ansible_facts.getent_shadow[backup_user][0] == '*'
+      - backup_access_groups.stdout.split() == [backup_user]
+      - backup_access_subid.stdout_lines | map('regex_replace', '^[^:]*:', '') | map('int') | sum == 0
+    quiet: true
+    fail_msg: пользователь бэкапа не как в design §11 (оболочка, пароль, группы, subuid)
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: сокет — как его видит systemd"
+  ansible.builtin.command:
+    argv: [systemctl, show, sa-backup.socket, -p, Listen, -p, SocketGroup, -p, SocketMode, -p, Accept, -p, MaxConnections,
+           -p, ActiveState, -p, UnitFileState]
+  register: backup_access_socket_show
+  changed_when: false
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: служба-экземпляр — как её видит systemd"
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - sa-backup@probe.service
+      - --property=DynamicUser,NoNewPrivileges,CapabilityBoundingSet,AmbientCapabilities,ProtectSystem,PrivateNetwork
+      - --property=TemporaryFileSystem,RuntimeMaxUSec,ExecStart,StandardOutput,StandardError,ProtectHome,BindReadOnlyPaths
+      - --property=SystemCallFilter,SystemCallArchitectures,RestrictNamespaces,LockPersonality,ProtectKernelTunables
+      - --property=ProtectKernelModules,ProtectKernelLogs,RestrictAddressFamilies,PrivateDevices
+  register: backup_access_service_show
+  changed_when: false
+  tags: [verify_backup]
+
+- name: "Проверка verify_backup: сокет 0660 группы бэкапа, Accept, один клиент; служба с одной способностью"
+  ansible.builtin.assert:
+    that:
+      - "'Listen=/run/sa-backup/stream.sock (Stream)' in backup_access_socket_show.stdout_lines"
+      - "('SocketGroup=' ~ backup_user) in backup_access_socket_show.stdout_lines"
+      - "'SocketMode=0660' in backup_access_socket_show.stdout_lines"
+      - "'Accept=yes' in backup_access_socket_show.stdout_lines"
+      - "'MaxConnections=1' in backup_access_socket_show.stdout_lines"
+      - "'ActiveState=active' in backup_access_socket_show.stdout_lines"
+      - "'UnitFileState=enabled' in backup_access_socket_show.stdout_lines"
+      - "'DynamicUser=yes' in backup_access_service_show.stdout_lines"
+      - "'NoNewPrivileges=yes' in backup_access_service_show.stdout_lines"
+      - "'CapabilityBoundingSet=cap_dac_read_search' in backup_access_service_show.stdout_lines"
+      - "'AmbientCapabilities=cap_dac_read_search' in backup_access_service_show.stdout_lines"
+      - "'ProtectSystem=strict' in backup_access_service_show.stdout_lines"
+      - "'PrivateNetwork=yes' in backup_access_service_show.stdout_lines"
+      - "'TemporaryFileSystem=/:ro' in backup_access_service_show.stdout_lines"
+      - backup_access_service_show.stdout is search('path=/usr/local/libexec/sa-backup-stream ;')
+      - "'StandardOutput=socket' in backup_access_service_show.stdout_lines"
+      - "'StandardError=journal' in backup_access_service_show.stdout_lines"
+      - "'ProtectHome=yes' in backup_access_service_show.stdout_lines"
+      - "'RestrictNamespaces=yes' in backup_access_service_show.stdout_lines"
+      - "'SystemCallArchitectures=native' in backup_access_service_show.stdout_lines"
+      - "'LockPersonality=yes' in backup_access_service_show.stdout_lines"
+      - "'ProtectKernelTunables=yes' in backup_access_service_show.stdout_lines"
+      - "'ProtectKernelModules=yes' in backup_access_service_show.stdout_lines"
+      - "'ProtectKernelLogs=yes' in backup_access_service_show.stdout_lines"
+      - "'PrivateDevices=yes' in backup_access_service_show.stdout_lines"
+      - backup_access_syscalls | length > 0
+      - backup_access_syscall_need | difference(backup_access_syscalls) | length == 0
+      - backup_access_syscall_deny | intersect(backup_access_syscalls) | length == 0
+      - backup_access_service_show.stdout_lines | select('match', '^BindReadOnlyPaths=') | list | length == 1
+      - backup_access_bind_actual | sort == backup_access_bind_paths | sort
+    quiet: true
+    fail_msg: сокет или служба копии не такие, как в design §11 (группа, режим, способности, пустой корень)
+  vars:
+    backup_access_syscall_line: "{{ backup_access_service_show.stdout_lines | select('match', '^SystemCallFilter=') | first | default('=') }}"
+    backup_access_syscalls: "{{ backup_access_syscall_line.split('=', 1)[1].split() }}"
+    backup_access_bind_line: "{{ backup_access_service_show.stdout_lines | select('match', '^BindReadOnlyPaths=') | first | default('=') }}"
+    backup_access_bind_actual: "{{ backup_access_bind_line.split('=', 1)[1].split() }}"
+  tags: [verify_backup]
+
+- name: "Проверка verify_restore_rejects: плохие архивы отвергаются"
+  ansible.builtin.include_tasks: verify_restore_rejects.yml
+  tags: [verify_restore_rejects]

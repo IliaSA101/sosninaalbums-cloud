@@ -1,0 +1,44 @@
+---
+# Берётся ExecStart, как его видит systemd, и тот же бинарник с теми же аргументами печатает действующую
+# конфигурацию (--dump-conf): на хосте без виртуального порта агент сам не запущен, но список команд виден.
+# Общая для main.yml (после перезапуска, падает прогон) и verify.yml (verify_guest_agent).
+# Именно `systemctl show`, а не модуль systemd_service: у юнита с несколькими ExecStart (Type=oneshot, drop-in) модуль
+# отдаёт одну запись, и лишняя команда осталась бы незамеченной; здесь все записи — отдельными строками.
+- name: "Проверка verify_guest_agent: ExecStart юнита как его видит systemd"
+  ansible.builtin.command:
+    argv: [systemctl, show, qemu-guest-agent.service, -p, ExecStart]
+  register: guest_agent_exec
+  changed_when: false
+  tags: [verify_guest_agent]
+
+# regex_search берёт первое вхождение: вторая команда (ExecStart из drop-in) без этой проверки осталась бы незамеченной.
+- name: "Проверка verify_guest_agent: у юнита ровно одна команда ExecStart"
+  ansible.builtin.assert:
+    that: guest_agent_exec.stdout | regex_findall('argv[[]]=') | length == 1
+    quiet: true
+    fail_msg: >-
+      у qemu-guest-agent.service не одна команда ExecStart (drop-in добавил вторую):
+      {{ guest_agent_exec.stdout_lines | join(' | ') }}
+  tags: [verify_guest_agent]
+
+- name: "Проверка verify_guest_agent: действующая конфигурация агента"
+  ansible.builtin.command:
+    argv: "{{ [guest_agent_argv, '--dump-conf'] | flatten }}"
+  vars:
+    guest_agent_argv: "{{ (guest_agent_exec.stdout | regex_search('argv[[]]=[^;]+') | regex_replace('^argv[[]]=', '')).split() }}"
+  register: guest_agent_conf_dump
+  changed_when: false
+  tags: [verify_guest_agent]
+
+- name: "Проверка verify_guest_agent: ExecStart — наш файл настроек, allow-rpcs — ровно белый список, block-rpcs пуст"
+  ansible.builtin.assert:
+    that:
+      - guest_agent_argv == [guest_agent_binary, '-c', guest_agent_conf]
+      - guest_agent_allow | sort == guest_agent_rpcs | sort
+      - "'block-rpcs=' in guest_agent_conf_dump.stdout_lines"
+    quiet: true
+    fail_msg: белый список команд агента расходится с design §10 (ExecStart, allow-rpcs, block-rpcs)
+  vars:
+    guest_agent_argv: "{{ (guest_agent_exec.stdout | regex_search('argv[[]]=[^;]+') | regex_replace('^argv[[]]=', '')).split() }}"
+    guest_agent_allow: "{{ (guest_agent_conf_dump.stdout_lines | select('match', '^allow-rpcs=') | first | regex_replace('^allow-rpcs=', '')).split(',') }}"
+  tags: [verify_guest_agent]

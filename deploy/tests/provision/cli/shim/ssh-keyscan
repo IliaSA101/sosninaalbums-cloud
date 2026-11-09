@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Поддельный ssh-keyscan для provision_cli: «ключ хоста» — открытая часть файла FAKE_HOSTKEY, адрес — последний аргумент.
+printf '%s %s\n' "${*: -1}" "$(cut -d' ' -f1,2 "${FAKE_HOSTKEY:?}")"

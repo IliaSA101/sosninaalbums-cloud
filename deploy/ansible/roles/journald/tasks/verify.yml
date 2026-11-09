@@ -1,0 +1,32 @@
+---
+# Проверки роли (design 002 §10, §12): действующая конфигурация journald, каталог журнала, нет rsyslog.
+- name: "Проверка verify_journald: итоговая конфигурация journald"
+  ansible.builtin.command: systemd-analyze cat-config systemd/journald.conf
+  register: journald_cfg
+  changed_when: false
+  tags: [verify_journald]
+
+- name: "Проверка verify_journald: каталог постоянного журнала"
+  ansible.builtin.stat:
+    path: /var/log/journal
+  register: journald_dir
+  tags: [verify_journald]
+
+- name: "Проверка verify_journald: пакет rsyslog"
+  ansible.builtin.command: dpkg-query -W -f '${Status}' rsyslog
+  register: journald_rsyslog
+  changed_when: false
+  failed_when: journald_rsyslog.rc not in [0, 1]
+  tags: [verify_journald]
+
+- name: "Проверка verify_journald: Storage=persistent, срок 14 суток, предел 1G, каталог есть, rsyslog нет"
+  ansible.builtin.assert:
+    that:
+      - "'Storage=persistent' in journald_cfg.stdout_lines"
+      - "'MaxRetentionSec=14day' in journald_cfg.stdout_lines"
+      - "'SystemMaxUse=1G' in journald_cfg.stdout_lines"
+      - journald_dir.stat.isdir | default(false)
+      - journald_rsyslog.rc == 1 or 'not-installed' in journald_rsyslog.stdout or 'deinstall' in journald_rsyslog.stdout
+    quiet: true
+    fail_msg: журнал расходится с design §10 (постоянный, 14 суток, 1G, без rsyslog)
+  tags: [verify_journald]

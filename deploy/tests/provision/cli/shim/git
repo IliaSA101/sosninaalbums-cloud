@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Поддельный git для provision_cli: сети нет, `git ls-remote` отдаёт ответ по lock (FAKE_LOCK) или заготовленный (FAKE_LSREMOTE — файл
+# «sha<TAB>ссылка»; FAKE_LSREMOTE_FAIL=1 — отказ); всё остальное — настоящий git без изменений.
+set -uo pipefail
+for a in "$@"; do
+	if [ "$a" = ls-remote ]; then
+		printf 'GIT ls-remote %s\n' "$*" >>"${SHIM_LOG:-/dev/null}"
+		[ "${FAKE_LSREMOTE_FAIL:-}" != 1 ] || exit 128
+		# FAKE_LSREMOTE — заготовленный ответ целиком; иначе ответ строится из lock (FAKE_LOCK): метка действия → его коммит.
+		if [ -n "${FAKE_LSREMOTE:-}" ]; then cat -- "$FAKE_LSREMOTE"; exit 0; fi
+		url=$(printf '%s\n' "$@" | grep -m1 '^https://github.com/actions/')
+		tag=$(printf '%s\n' "$@" | grep -m1 '^refs/tags/' | sed 's|^refs/tags/||')
+		awk -v n="actions/${url##*/}" -v t="$tag" '$1 == n && $2 == t { printf "%s\trefs/tags/%s\n", $3, t }' "${FAKE_LOCK:?}"
+		exit 0
+	fi
+done
+exec /usr/bin/git "$@"

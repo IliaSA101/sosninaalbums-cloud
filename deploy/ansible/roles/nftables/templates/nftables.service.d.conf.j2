@@ -1,0 +1,6 @@
+# Управляется Ansible (роль nftables, design 002 §6): правки руками будут перезаписаны.
+# В Debian ExecStop юнита — `nft flush ruleset`: stop и restart оставили бы хост без фильтра. С пустым
+# ExecStop= остановка ничего не сбрасывает, а restart — это повторная загрузка /etc/nftables.conf, которая
+# заменяет таблицу sa_filter одной транзакцией (delete table + table), без окна без правил.
+[Service]
+ExecStop=

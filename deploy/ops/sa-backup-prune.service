@@ -1,0 +1,14 @@
+[Unit]
+Description=Чистка копий albums-svc (старше 30 дней) и проверка свежести
+
+[Service]
+Type=oneshot
+# Скрипты — копии из ~/.local/libexec/sa/ (их ставит успешный configure из уже просмотренного коммита), а не
+# файлы клона: из клона непросмотренный код выполнялся бы раз в сутки без консоли (решение И2-2).
+ExecStart=%h/.local/libexec/sa/sa-backup-prune.sh
+# Каталог копий; другой SA_BACKUP_DIR — systemctl --user edit sa-backup-prune.service (и ReadWritePaths).
+Environment=SA_BACKUP_DIR=%h/backups
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=-%h/backups

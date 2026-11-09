@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Поддельный loginctl для provision_cli: Type, User, Remote, State сессии задаёт тест (FAKE_TYPE, FAKE_USER, FAKE_REMOTE,
+# FAKE_STATE; пустой State — «нет поля»); show-user отдаёт Display (FAKE_DISPLAY, по умолчанию «3»; пустое значение — у учётной записи нет
+# графической сессии). show-session с пустым идентификатором отвечает, как настоящий loginctl в терминале GNOME
+# («Caller does not belong to any known session», код 1); идентификатор, по которому спросили, записывается в
+# SHIM_OUT/loginctl.sid — тест сверяет, что взята сессия Display, а не XDG_SESSION_ID.
+case ${1:-} in
+	show-user)
+		printf '%s\n' "${FAKE_DISPLAY-3}"
+		;;
+	show-session)
+		if [ -z "${2:-}" ]; then
+			echo "Caller does not belong to any known session" >&2
+			exit 1
+		fi
+		if [ -n "${SHIM_OUT:-}" ]; then
+			mkdir -p "$SHIM_OUT"
+			printf '%s\n' "$2" >"$SHIM_OUT/loginctl.sid"
+		fi
+		printf 'Type=%s\nUser=%s\nRemote=%s\nState=%s\n' "${FAKE_TYPE:-tty}" "${FAKE_USER:-$(id -u)}" "${FAKE_REMOTE:-no}" "${FAKE_STATE-active}"
+		;;
+	*) exit 1 ;;
+esac

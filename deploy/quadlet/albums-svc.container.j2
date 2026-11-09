@@ -1,0 +1,77 @@
+# Quadlet-юнит albums-svc (rootless, пользователь systemd `albums`). Шаблон Jinja2 для роли Ansible.
+# Переменная из inventory: albums_svc_image — образ строго с дайджестом, registry/имя@sha256:<64 hex>;
+# без дайджеста шаблон падает (проверка в строке Image=). Больше ни домена, ни адресов в юните нет.
+# Кладётся в ~albums/.config/containers/systemd/albums-svc.container, у пользователя включён linger.
+# Каталоги на хосте (создаёт роль albums_svc): /var/lib/albums-svc/data (0700; владелец — uid процесса сервиса
+# на хосте, начало subuid + 65531: роль делает `chown` от root, то же, что `podman unshare chown 65532:65532`, без
+# вложенного Podman), /etc/albums-svc (0750 root:albums, config.json 0640; процессу сервиса доступ даёт ACL на
+# его uid в карте subuid — см. deploy/README.md), /run/albums-svc (tmpfiles.d с ACL для Caddy) — см. deploy/systemd/.
+
+[Unit]
+Description=albums-svc: сервис листалок
+
+[Container]
+Image={{ albums_svc_image if (albums_svc_image is regex('^\\S+@sha256:[0-9a-f]{64}$')) else albums_svc_image_must_be_pinned_by_sha256_digest }}
+ContainerName=albums-svc
+# Образ уже по дайджесту и ставится ролью: «новее» не тянем, обновление — сменой дайджеста в inventory.
+Pull=missing
+
+# Сети нет вообще: Caddy ходит по unix-сокету, у соседей по машине нет порта, куда постучаться и подделать
+# X-Sa-Client-IP (design §1). Исходящих соединений сервису не нужно.
+Network=none
+
+# Корневая ФС только для чтения, и tmpfs поверх /tmp, /run, /dev по умолчанию не добавляется
+# (ReadOnlyTmpfs=false): писать можно только в два тома ниже, оба noexec,nosuid,nodev. Временные файлы
+# сервис держит в data/tmp (design §2).
+ReadOnly=true
+ReadOnlyTmpfs=false
+DropCapability=ALL
+NoNewPrivileges=true
+
+# Обычная карта идентификаторов (без keep-id): процесс — uid 65532 из образа, на хосте это uid из
+# диапазона subuid пользователя `albums`, а не он сам. Доступ Caddy к сокету — ACL на каталоге сокета
+# (deploy/systemd/albums-svc.tmpfiles.conf), группы `albums` у Caddy нет: конфиг ему не читается.
+User=65532
+Group=65532
+
+# Лимиты: памяти хватает на приём одной страницы (15 МБ) и индекс; процессов — потоки Go-рантайма с
+# запасом. Память — через PodmanArgs: ключа Memory= нет в Quadlet Podman 4.9 (локальный стенд), а
+# --memory работает в любой версии.
+PodmanArgs=--memory=256m
+PidsLimit=128
+Environment=GOMEMLIMIT=200MiB
+Ulimit=nofile=4096:4096
+
+# Секрет — файл /run/secrets/albums_master, 0400, владелец — процесс сервиса (design §6). Создаётся
+# заранее: podman secret create albums_master -  (значение — из vault). Драйвер file хранит его base64 в
+# ~albums/.local/share/containers/storage/secrets (0600): это каталог, который не должен попасть в бэкап.
+Secret=albums_master,type=mount,target=albums_master,mode=0400,uid=65532,gid=65532
+
+# Конфиг — каталог только для чтения (не один файл: подмена файла при замене не подхватывается); данные —
+# единственный записываемый том, вне домашнего каталога; каталог сокета общий с Caddy.
+Volume=/etc/albums-svc:/etc/albums-svc:ro,noexec,nosuid,nodev
+Volume=/var/lib/albums-svc/data:/data:rw,noexec,nosuid,nodev
+Volume=/run/albums-svc:/run/albums-svc:rw,noexec,nosuid,nodev
+
+# Проверка здоровья — подкоманда самого бинарника по сокету изнутри (design §1): curl в образе нет.
+# После трёх неудач контейнер убивается и systemd перезапускает юнит (Restart=always).
+# Команда — JSON-массивом (exec-форма): строкой Podman запустил бы её как `/bin/sh -c …`, а в образе (distroless)
+# оболочки нет — каждая проверка падала бы «executable file `/bin/sh` not found», три неудачи убивали бы контейнер
+# и юнит ходил бы по кругу (прогон CI 01.11). В `podman inspect` — CMD, а не CMD-SHELL.
+HealthCmd=["/albums-svc","health","-config","/etc/albums-svc/config.json"]
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=10s
+HealthOnFailure=kill
+
+[Service]
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+# Каталог сокета принадлежит процессу сервиса (uid 65532 в карте subuid), а не пользователю albums: tmpfiles
+# создаёт его при загрузке от albums с ACL для Caddy, здесь владелец меняется. ACL при chown сохраняется.
+ExecStartPre=/usr/bin/podman unshare chown 65532:65532 /run/albums-svc
+
+[Install]
+WantedBy=default.target

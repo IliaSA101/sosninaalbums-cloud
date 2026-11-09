@@ -1,0 +1,44 @@
+---
+# Проверки роли (design 002 §10, §12): версия из Debian, оба юнита замаскированы в системной и пользовательской области.
+# Маска — симлинк на /dev/null: смотрим на сам файл, а не на is-enabled (он не отличает маску от чужого файла).
+- name: "Проверка verify_podman: версия пакета и выбор источника"
+  ansible.builtin.command:
+    argv: [apt-cache, policy, podman]
+  register: podman_policy
+  changed_when: false
+  tags: [verify_podman]
+
+- name: "Проверка verify_podman: версия, которую сообщает бинарник"
+  ansible.builtin.command:
+    argv: [podman, --version]
+  register: podman_bin
+  changed_when: false
+  tags: [verify_podman]
+
+- name: "Проверка verify_podman: установленная версия пакета"
+  ansible.builtin.command:
+    argv: [dpkg-query, -W, "-f=${Version}", podman]
+  register: podman_pkg
+  changed_when: false
+  tags: [verify_podman]
+
+- name: "Проверка verify_podman: симлинки-маски"
+  ansible.builtin.stat:
+    path: "{{ item.0 }}/{{ item.1 }}"
+  register: podman_masks
+  loop: "{{ ['/etc/systemd/system', '/etc/systemd/user'] | product(podman_masked_units) | list }}"
+  loop_control:
+    label: "{{ item.0 }}/{{ item.1 }}"
+  tags: [verify_podman]
+
+- name: "Проверка verify_podman: пакет из Debian, бинарник той же версии, юниты замаскированы"
+  ansible.builtin.assert:
+    that:
+      - podman_policy.stdout is not search('cloudsmith')
+      - "podman_policy.stdout_lines | select('match', '^\\s*Installed: ' ~ (podman_pkg.stdout | regex_escape) ~ '$') | list | length == 1"
+      - podman_bin.stdout is regex('^podman version ' ~ (podman_pkg.stdout | regex_replace('[-+~].*$', '') | regex_escape) ~ '$')
+      - podman_masks.results | map(attribute='stat.lnk_source') | unique | list == ['/dev/null']
+      - podman_masks.results | map(attribute='stat.islnk') | unique | list == [true]
+    quiet: true
+    fail_msg: Podman не из Debian, версия бинарника не совпадает с пакетом или podman.socket/podman-auto-update.timer не замаскированы (design §10)
+  tags: [verify_podman]

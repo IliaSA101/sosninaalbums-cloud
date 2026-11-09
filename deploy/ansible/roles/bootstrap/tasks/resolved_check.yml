@@ -1,0 +1,35 @@
+---
+# Самопроверка systemd-resolved: на глобальной настройке и на каждой связи в `resolvectl status` — `-LLMNR` и `-mDNS`.
+# Идёт и в каждом bootstrap/configure (resolved.yml), и как verify_resolved (verify.yml). Ничего не меняет.
+# LC_ALL=C: формат и язык вывода не зависят от локали; строк «Protocols:» должно быть не меньше одной — иначе сменился формат
+# вывода, и «ноль строк — ноль нарушений» выглядело бы как успех (005-31). Служба не работает — пропуск.
+- name: Службы хоста (для проверки systemd-resolved)
+  ansible.builtin.service_facts:
+  tags: [verify_resolved]
+
+- name: Состояние LLMNR и mDNS (resolvectl status)
+  ansible.builtin.command: resolvectl status
+  environment:
+    LC_ALL: C
+  register: bootstrap_resolved_status
+  changed_when: false
+  when: bootstrap_resolved_running | bool
+  tags: [verify_resolved]
+
+- name: Проверка verify_resolved — в каждой строке Protocols есть -LLMNR и -mDNS
+  ansible.builtin.assert:
+    that:
+      - bootstrap_resolved_lines | length >= 1
+      - bootstrap_resolved_bad | length == 0
+    quiet: true
+    fail_msg: >-
+      systemd-resolved: LLMNR или mDNS включены (или в выводе resolvectl нет строк Protocols — формат изменился);
+      порт 5355 слушался бы на всех адресах
+  vars:
+    bootstrap_resolved_lines: "{{ bootstrap_resolved_status.stdout_lines | select('search', '^\\s*Protocols:') | list }}"
+    # В неквотированном скаляре YAML обратная косая не разбирается, а Jinja строку не раскрывает: регэксп пишется с одной \.
+    bootstrap_resolved_bad: >-
+      {{ (bootstrap_resolved_lines | reject('search', '(^|\s)-LLMNR(\s|$)') | list)
+      + (bootstrap_resolved_lines | reject('search', '(^|\s)-mDNS(\s|$)') | list) }}
+  when: bootstrap_resolved_running | bool
+  tags: [verify_resolved]

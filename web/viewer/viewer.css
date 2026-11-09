@@ -1,0 +1,412 @@
+/* Листалка, форма входа. Свой файл, без внешних шрифтов и картинок: системный шрифт, цвета в этом файле. */
+:root {
+  --paper: #fff;
+  --ground: #f5f1ed;
+  --ink: #1e1e1e;
+  /* Тёплая палитра по умолчанию (позже темы по студиям). Подписи мельче референсного #8a8079: на тёплом фоне
+     у него контраст ниже 4,5:1, а подпись мелкая. */
+  --muted: #6f665f;
+  --accent: #aa8d74;
+  --accent-dark: #7a6350; /* белый текст на #aa8d74 не дотягивает до контраста — кнопка входа темнее */
+  --error: #a3261c;
+  --edge: rgba(0, 0, 0, 0.14);
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* Колесо и свайп листают книгу (app.js): браузер не должен ещё и тянуть страницу или уходить «назад». */
+  overscroll-behavior: none;
+}
+
+body {
+  font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: var(--ink);
+  background: var(--ground);
+}
+
+/* --- листалка --- */
+
+/* Тёплый фон одним градиентом на всё окно: на стыке шапки, сцены и подписи нет швов, а тень книги, которую обрезает
+   .stage, уходит в тот же фон. */
+body.viewer {
+  background: radial-gradient(ellipse at 50% 35%, #fbf9f7 0%, var(--ground) 70%);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 16px 0;
+}
+
+/* Название слева и забирает всё свободное место; подпись студии и кнопка полного экрана — вплотную справа.
+   На узком экране сжимается и обрезается многоточием название, подпись не наезжает. */
+.bar-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 1.05rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bar-studio:empty {
+  display: none;
+}
+
+.bar-studio {
+  margin: 0;
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Подпись-ссылка на сайт студии (studio.js): цвет подписи, подчёркивание при наведении и фокусе с клавиатуры. */
+.bar-studio a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bar-studio a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bar-studio a:focus-visible {
+  /* Внутрь: у .bar-studio overflow: hidden, внешняя обводка обрезалась бы. */
+  outline: 2px solid #5b8bd9;
+  outline-offset: -2px;
+}
+
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Книга почти во всю сцену: поля ровно под тень (см. .book-holder), book.js считает размер без этих отступов.
+     overflow-x: clip режет сдвинутую пустую половину разворота, а по вертикали ничего не режет: тень уходит под
+     книгу в подпись. Браузер без clip оставит hidden — тень снизу тогда чуть обрезана, и только. */
+  padding: 8px 16px;
+  overflow: hidden;
+  overflow-x: clip;
+  overflow-y: visible;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.status {
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Размер задаёт book.js (fitSize); StPageFlip подгоняется под него. */
+.book-holder {
+  flex: none;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Тень — drop-shadow по видимым пикселям, а не box-shadow по рамке: рядом с одиночной обложкой пустая половина
+   разворота тени не получает. */
+.book-holder {
+  filter: drop-shadow(0 4px 14px rgba(60, 40, 25, 0.22));
+}
+
+/* Сдвиг книги при переходе без анимации листа (Home, End, первая сборка): плавно, а не прыжком. Во время
+   переворота сдвиг ведёт book.js покадрово, этот класс там снят. */
+.book-holder.book-glide {
+  transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* Корешок: тень в сгибе разворота. StPageFlip сама ставит классы --left и --right на страницы разворота. */
+/* Только у разворота (book.js ставит book-spread): в вертикальном режиме страница одна, корешка у неё нет.
+   Не у страницы с ошибкой загрузки: там ::after занят подписью. */
+.book-spread .page.--left:not(.page-failed)::after,
+.book-spread .page.--right:not(.page-failed)::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7%;
+  pointer-events: none;
+}
+
+.book-spread .page.--left:not(.page-failed)::after {
+  right: 0;
+  background: linear-gradient(to left, rgba(0, 0, 0, 0.13), rgba(0, 0, 0, 0));
+}
+
+.book-spread .page.--right:not(.page-failed)::after {
+  left: 0;
+  background: linear-gradient(to right, rgba(0, 0, 0, 0.13), rgba(0, 0, 0, 0));
+}
+
+/* Страница — белый лист: у белой страницы (форзац) нет картинки, она остаётся просто белой. */
+.page {
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.page img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  -webkit-user-drag: none;
+}
+
+/* Картинка почти той же пропорции, что лист (book.js, fillsPage): заполняем лист, чтобы не оставалось белых полос. */
+.page-fill img {
+  object-fit: cover;
+}
+
+.page-loaded img {
+  opacity: 1;
+}
+
+.page-failed img {
+  display: none;
+}
+
+.page-failed::after {
+  content: 'Страница недоступна';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 4px 16px 10px;
+  position: relative; /* рисуется над сценой: тень книги, ушедшая вниз, ложится под подпись, а не на неё */
+}
+
+/* Подпись под книгой: крупная строка и мелкая. Шрифты только системные — внешних не грузим (CSP). */
+.counter {
+  min-width: 9em;
+  text-align: center;
+}
+
+.counter-main {
+  display: block;
+  font: 20px/1.2 Georgia, 'Times New Roman', serif;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.counter-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.nav,
+.fs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(170, 141, 116, 0.55);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.nav:hover:not(:disabled),
+.fs:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* На сенсорном экране «наведение» после касания залипает — подсвечиваем только там, где есть мышь. */
+@media (hover: none) {
+  .nav:hover:not(:disabled),
+  .fs:hover {
+    background: rgba(255, 255, 255, 0.7);
+    color: var(--accent);
+  }
+}
+
+/* Кнопка полного экрана — в шапке, крайняя справа, не над книгой: поверх сцены она ложилась бы на угол страницы,
+   за который листают. */
+.fs {
+  flex: none;
+  width: 36px;
+  height: 36px;
+}
+
+/* Подсказка про поворот телефона: только когда книга вертикальная и экран сенсорный. */
+.rotate {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 16px 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .rotate:not([hidden]) {
+    display: flex;
+  }
+}
+
+.nav:focus-visible,
+.fs:focus-visible,
+.submit:focus-visible {
+  outline: 3px solid #5b8bd9;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page img,
+  .nav,
+  .fs,
+  .book-holder.book-glide {
+    transition: none;
+  }
+}
+
+/* Телефон в портрете: страница на всю ширину, подписи компактнее. */
+@media (max-width: 560px) {
+  .bar {
+    padding: 8px 12px 0;
+  }
+
+  .stage {
+    padding: 8px 12px;
+  }
+}
+
+/* Телефон лёжа: высоты мало — шапка и подпись плотнее, чтобы книга не пропадала. */
+@media (max-height: 500px) {
+  .bar {
+    padding-top: 2px;
+  }
+
+  .controls {
+    padding-bottom: 4px;
+  }
+}
+
+/* --- форма входа --- */
+
+body.plain {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 16px;
+}
+
+.card {
+  width: 100%;
+  max-width: 360px;
+  padding: 28px 24px;
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: 0 6px 24px var(--edge);
+}
+
+.card-studio {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.card-title {
+  margin: 0 0 20px;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.field {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #b9b5ab;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit; /* не меньше 16 px: иначе iOS приближает страницу при фокусе */
+}
+
+.card-error {
+  margin: 10px 0 0;
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+.submit {
+  display: block;
+  width: 100%;
+  margin-top: 16px;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent-dark);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}

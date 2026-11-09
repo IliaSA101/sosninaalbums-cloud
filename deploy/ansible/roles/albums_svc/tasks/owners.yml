@@ -1,0 +1,84 @@
+---
+# Проверка albums_owners ДО первого изменения на сервере. Правило то же, что у сервиса (internal/config/config.go:
+# checkOwners, checkSite): роль кладёт владельцев в config.json как есть, и мягкая роль — это сервис, не стартующий
+# у всех владельцев после записи конфига. Отдельным файлом — чтобы статический тест owners_rule_static.py гонял
+# именно эти задачи настоящим Ansible на общем наборе случаев (internal/config/testdata/site_cases.json).
+# Значения не печатаются (no_log): в списке лежат хэши токенов.
+# Файл зовут дважды: первым делом в site.yml (pre_tasks, до всех ролей; 005-35) и из assert.yml роли. Поэтому ему
+# нужен только albums_owners и переменные правил из vars/main.yml роли — больше ничего.
+- name: Владельцы — список задан
+  ansible.builtin.assert:
+    that:
+      - albums_owners is defined
+      - albums_owners is sequence and albums_owners is not string and albums_owners is not mapping
+      # Пустой список — отказ здесь же и с этим текстом, а не дальше другой задачей (assert идёт по условиям по порядку).
+      - albums_owners | length > 0
+    quiet: true
+    fail_msg: albums_owners — список владельцев (inventory), хотя бы один
+
+- name: Владельцы — ключи, слаг, лимиты
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | list | difference(albums_svc_owner_keys) | length == 0
+      - item.slug is defined and item.slug is string and item.slug is regex(albums_svc_slug_re)
+      - item.quota_bytes is defined and item.quota_bytes is integer and item.quota_bytes is not boolean and item.quota_bytes > 0
+      - item.quota_bytes <= albums_svc_int64_max
+      - item.max_albums is defined and item.max_albums is integer and item.max_albums is not boolean and item.max_albums > 0
+      - item.max_albums <= albums_svc_int64_max
+    quiet: true
+    fail_msg: >-
+      владелец в albums_owners задан неверно: допустимые ключи slug, studio, site, quota_bytes, max_albums, tokens;
+      слаг [a-z0-9-], квота и число альбомов — положительные целые не больше 9223372036854775807 (int64/int сервиса)
+  loop: "{{ albums_owners }}"
+  loop_control:
+    label: "{{ item.slug | default('?') if item is mapping else '?' }}"
+  no_log: true
+
+- name: Владельцы — подпись студии и сайт
+  ansible.builtin.assert:
+    that:
+      - item.studio is defined and item.studio is string and item.studio | length >= 1 and item.studio | length <= 100
+      - item.studio is regex(albums_svc_visible_re)
+      - >-
+        item.site is not defined or (item.site is string and item.site | length <= 200
+        and item.site is regex(albums_svc_site_re) and item.site is not regex(albums_svc_site_dot_re))
+    quiet: true
+    fail_msg: >-
+      владелец в albums_owners задан неверно: студия — 1…100 знаков без управляющих и невидимых; site (необязательный) —
+      https://имя.зона[/путь] в ASCII (кириллица — punycode), до 200 знаков, без порта, IP, запроса, якоря, «.» и «..» в пути;
+      сайт не нужен — уберите строку site, пустое значение не допускается
+  loop: "{{ albums_owners }}"
+  loop_control:
+    label: "{{ item.slug | default('?') }}"
+  no_log: true
+
+- name: Владельцы — токены (только name и sha256)
+  ansible.builtin.assert:
+    that:
+      - item.tokens is defined and item.tokens is sequence and item.tokens is not string and item.tokens | length > 0
+      - item.tokens | select('mapping') | list | length == item.tokens | length
+      - item.tokens | map('list') | list | flatten | unique | list | difference(albums_svc_token_keys) | length == 0
+      - item.tokens | map(attribute='sha256', default='') | select('string') | select('regex', albums_svc_sha256_re) | list | length == item.tokens | length
+      - item.tokens | map(attribute='name', default='') | select('string') | select('regex', albums_svc_visible_re) | list | length == item.tokens | length
+      - item.tokens | map(attribute='name', default='') | map('length') | select('le', 64) | list | length == item.tokens | length
+    quiet: true
+    fail_msg: >-
+      токен владельца в albums_owners задан неверно: только ключи name и sha256; name — 1…64 знака без управляющих,
+      sha256 — hex, 64 (токен в открытом виде не принимается)
+  loop: "{{ albums_owners }}"
+  loop_control:
+    label: "{{ item.slug | default('?') }}"
+  no_log: true
+
+- name: Владельцы — слаги и хэши токенов уникальны
+  ansible.builtin.assert:
+    that:
+      - albums_owners | map(attribute='slug') | unique | list | length == albums_owners | length
+      - albums_all_hashes | unique | list | length == albums_all_hashes | length
+      - albums_owners | length > 0
+    quiet: true
+    fail_msg: слаги владельцев и sha256 токенов должны быть уникальны, владелец — хотя бы один
+  vars:
+    albums_all_hashes: "{{ albums_owners | map(attribute='tokens') | flatten | map(attribute='sha256') | list }}"
+  no_log: true

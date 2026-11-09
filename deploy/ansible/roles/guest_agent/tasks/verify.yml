@@ -1,0 +1,5 @@
+---
+# Проверки роли (design 002 §10, §12): та же проверка, что и в конце main.yml, но отдельным запуском.
+- name: "Проверка verify_guest_agent: итоговая конфигурация агента"
+  ansible.builtin.include_tasks: verify_effective.yml
+  tags: [verify_guest_agent]

@@ -1,0 +1,3 @@
+# Прямые зависимости матрицы доступа; точные версии и хэши — в requirements.txt (pip-compile).
+httpx
+pytest

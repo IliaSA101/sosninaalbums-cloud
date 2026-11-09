@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Поддельный ssh для provision_cli: отдаёт поток из FAKE_STREAM (как ключ забора с command=), код — FAKE_SSH_RC.
+printf 'SSH %s\n' "$*" >>"$SHIM_LOG"
+ps -eo args= >>"$SHIM_PS"
+# Проба сети сервера (ops/ghcr_probe.py уходит на stdin): свой код FAKE_PROBE_RC и вывод FAKE_PROBE_OUT; в журнал — хэш
+# присланного скрипта (SSHIN): тест убеждается, что на сервер ушёл именно файл из клона.
+case "$*" in
+	*"python3 -I - "*)
+		printf 'SSHIN %s\n' "$(sha256sum | cut -d' ' -f1)" >>"$SHIM_LOG"
+		[ -z "${FAKE_PROBE_OUT:-}" ] || printf '%s\n' "$FAKE_PROBE_OUT"
+		exit "${FAKE_PROBE_RC:-0}"
+		;;
+esac
+[ "${FAKE_SSH_RC:-0}" = 0 ] || exit "$FAKE_SSH_RC"
+cat "${FAKE_STREAM:-/dev/null}"
