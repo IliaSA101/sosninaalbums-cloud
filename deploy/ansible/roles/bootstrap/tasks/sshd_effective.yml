@@ -1,0 +1,70 @@
+---
+# Итоговая конфигурация sshd, как её видит демон (sshd -T): проверка значений для администратора и root,
+# отсутствие Match и чужих Include. Общая для sshd.yml (после reload, до закрытия root — провал откатывает
+# 00-sa.conf) и verify.yml (verify_sshd_effective).
+- name: "Проверка verify_sshd_effective: действующая конфигурация sshd для администратора"
+  ansible.builtin.command: "/usr/sbin/sshd -T -C user={{ admin_user }},host=verify.invalid,addr=192.0.2.1"
+  register: bootstrap_sshd_admin
+  changed_when: false
+  tags: [verify_sshd_effective]
+
+- name: "Проверка verify_sshd_effective: действующая конфигурация sshd для root"
+  ansible.builtin.command: "/usr/sbin/sshd -T -C user=root,host=verify.invalid,addr=192.0.2.1"
+  register: bootstrap_sshd_root
+  changed_when: false
+  tags: [verify_sshd_effective]
+
+# Match меняет значения для отдельных пользователей и адресов — sshd -T с одним набором условий их не покажет;
+# Include на каталог вне sshd_config.d подтянул бы файлы, которые этот поиск не читает, — это отказ.
+# Ищется во всех файлах каталога, не только *.conf: лишнее совпадение — отказ, а не пропуск.
+- name: "Проверка verify_sshd_effective: Match и Include в конфигурации sshd"
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -Ehirs
+      - '^[[:space:]]*(match|include)[[:space:]]'
+      - /etc/ssh/sshd_config
+      - /etc/ssh/sshd_config.d
+  register: bootstrap_sshd_directives
+  changed_when: false
+  failed_when: bootstrap_sshd_directives.rc not in [0, 1]
+  tags: [verify_sshd_effective]
+
+- name: "Проверка verify_sshd_effective: значения (PerSourcePenalties, AllowUsers, только ключ, без Match и чужих Include)"
+  ansible.builtin.assert:
+    that:
+      - "'permitrootlogin no' in bootstrap_sshd_admin.stdout_lines"
+      - "'permitrootlogin no' in bootstrap_sshd_root.stdout_lines"
+      - "'passwordauthentication no' in bootstrap_sshd_admin.stdout_lines"
+      - "'passwordauthentication no' in bootstrap_sshd_root.stdout_lines"
+      - "'kbdinteractiveauthentication no' in bootstrap_sshd_admin.stdout_lines"
+      - "'authenticationmethods publickey' in bootstrap_sshd_admin.stdout_lines"
+      - "'authorizedkeysfile .ssh/authorized_keys' in bootstrap_sshd_admin.stdout_lines"
+      - "'authorizedkeyscommand none' in bootstrap_sshd_admin.stdout_lines"
+      - "'authorizedprincipalscommand none' in bootstrap_sshd_admin.stdout_lines"
+      - "'authorizedprincipalsfile none' in bootstrap_sshd_admin.stdout_lines"
+      - "'trustedusercakeys none' in bootstrap_sshd_admin.stdout_lines"
+      - "'hostbasedauthentication no' in bootstrap_sshd_admin.stdout_lines"
+      - "'gssapiauthentication no' in bootstrap_sshd_admin.stdout_lines"
+      - "'permituserenvironment no' in bootstrap_sshd_admin.stdout_lines"
+      - "('allowusers ' ~ admin_user) in bootstrap_sshd_admin.stdout_lines"
+      - "('allowusers ' ~ backup_user) in bootstrap_sshd_admin.stdout_lines"
+      - "(bootstrap_sshd_admin.stdout_lines | select('match', '^allowusers ') | list | length) == 2"
+      - "'disableforwarding yes' in bootstrap_sshd_admin.stdout_lines"
+      - "'allowtcpforwarding no' in bootstrap_sshd_admin.stdout_lines"
+      - "'allowagentforwarding no' in bootstrap_sshd_admin.stdout_lines"
+      - "'x11forwarding no' in bootstrap_sshd_admin.stdout_lines"
+      - "'permittunnel no' in bootstrap_sshd_admin.stdout_lines"
+      - "'maxauthtries 3' in bootstrap_sshd_admin.stdout_lines"
+      - "'logingracetime 30' in bootstrap_sshd_admin.stdout_lines"
+      - "'maxstartups 10:30:60' in bootstrap_sshd_admin.stdout_lines"
+      - "(bootstrap_sshd_admin.stdout_lines | select('match', '^persourcepenalties ') | reject('equalto', 'persourcepenalties no') | list | length) == 1"
+      - bootstrap_sshd_directives.stdout_lines | select('match', '(?i)^\s*match\s') | list | length == 0
+      - >-
+        bootstrap_sshd_directives.stdout_lines | map('regex_replace', '\s+', ' ') | map('trim')
+        | reject('equalto', 'Include /etc/ssh/sshd_config.d/*.conf') | list | length == 0
+    quiet: true
+    fail_msg: >-
+      действующая конфигурация sshd расходится с design §7: значения (sshd -T для администратора и root), Match
+      или Include не на /etc/ssh/sshd_config.d/*.conf
+  tags: [verify_sshd_effective]

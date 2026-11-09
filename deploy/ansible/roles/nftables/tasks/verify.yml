@@ -1,0 +1,60 @@
+---
+# Проверки роли (design 002 §6, §12): таблица, порты, слушатели. Проверка «порт снаружи закрыт, а служба на
+# нём слушает» и отсутствие restarted/stopped для nftables в ролях — на стороне стенда (verify.sh).
+- name: "Проверка verify_nft_ports: таблица inet sa_filter в JSON"
+  ansible.builtin.command: /usr/sbin/nft -j list table inet sa_filter
+  register: nftables_json
+  changed_when: false
+  tags: [verify_nft_ports, verify_nft_no_iface_exceptions]
+
+- name: "Проверка verify_nft_ports: служба включена"
+  ansible.builtin.systemd_service:
+    name: nftables.service
+  register: nftables_unit
+  tags: [verify_nft_ports]
+
+- name: "Проверка verify_nft_ports: drop по умолчанию, открыты ровно tcp 22, 80, 443, ExecStop пуст"
+  ansible.builtin.assert:
+    that:
+      - (nftables_chains | selectattr('name', 'equalto', 'input') | list | length) == 1
+      - (nftables_chains | selectattr('name', 'equalto', 'input') | first).policy == 'drop'
+      - (nftables_chains | selectattr('name', 'equalto', 'forward') | first).policy == 'drop'
+      - nftables_tcp_dport | length == 1
+      - (nftables_tcp_dport | first).right.set | map('int') | sort | list == [22, 80, 443]
+      - nftables_unit.status.UnitFileState == 'enabled'
+      - nftables_unit.status.ExecStop | default('') | length == 0
+    quiet: true
+    fail_msg: таблица sa_filter или юнит nftables расходятся с design §6 (политика, порты, пустой ExecStop)
+  vars:
+    nftables_items: "{{ (nftables_json.stdout | from_json).nftables }}"
+    nftables_chains: "{{ nftables_items | selectattr('chain', 'defined') | map(attribute='chain') | list }}"
+    nftables_matches: >-
+      {{ nftables_items | selectattr('rule', 'defined') | map(attribute='rule') | map(attribute='expr') | flatten
+      | selectattr('match', 'defined') | map(attribute='match') | list }}
+    nftables_tcp_dport: >-
+      {{ nftables_matches | selectattr('left.payload', 'defined') | selectattr('left.payload.field', 'equalto', 'dport')
+      | selectattr('left.payload.protocol', 'equalto', 'tcp') | list }}
+  tags: [verify_nft_ports]
+
+- name: "Проверка verify_nft_no_iface_exceptions: исключений по интерфейсам нет, кроме lo"
+  ansible.builtin.assert:
+    that:
+      - nftables_iface | length >= 1
+      - nftables_iface | rejectattr('right', 'equalto', 'lo') | list | length == 0
+    quiet: true
+    fail_msg: в таблице sa_filter есть правило по интерфейсу, кроме lo (design §6)
+  vars:
+    nftables_items: "{{ (nftables_json.stdout | from_json).nftables }}"
+    nftables_matches: >-
+      {{ nftables_items | selectattr('rule', 'defined') | map(attribute='rule') | map(attribute='expr') | flatten
+      | selectattr('match', 'defined') | map(attribute='match') | list }}
+    nftables_iface: >-
+      {{ nftables_matches | selectattr('left.meta', 'defined')
+      | selectattr('left.meta.key', 'in', ['iif', 'iifname', 'iifgroup', 'oif', 'oifname', 'oifgroup']) | list }}
+  tags: [verify_nft_no_iface_exceptions]
+
+# Слушатели вынесены в listeners.yml: их проверяет и каждый configure (post_tasks site.yml, спека 005, 005-25), а не только стенд —
+# иначе служба на 0.0.0.0 (так прошёл LLMNR на 5355) проходила configure молча, а опору имел только фильтр nftables.
+- name: "Проверка verify_listeners: слушатели вне lo (listeners.yml)"
+  ansible.builtin.include_tasks: listeners.yml
+  tags: [verify_listeners]

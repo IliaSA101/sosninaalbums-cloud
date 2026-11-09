@@ -1,0 +1,56 @@
+---
+# Пользователь образа (его создаёт cloud-init провайдера) имеет sudo без пароля — после bootstrap он не нужен.
+# Блокировка — когда прогон идёт НЕ от его имени (оболочка nologin и снятый sudoers оборвали бы собственные
+# задачи; bootstrap.yml вызывает это отдельным плеем уже под администратором). Удаление — только site.yml
+# (bootstrap_remove_image_user): userdel текущего пользователя или пользователя с живыми процессами падает.
+- name: Запись пользователя образа в passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ bootstrap_image_user }}"
+    fail_key: false
+  register: bootstrap_image_entry
+  when: bootstrap_image_user | length > 0
+
+- name: Пользователь образа заблокирован
+  when:
+    - bootstrap_image_user | length > 0
+    - bootstrap_connect_user != bootstrap_image_user
+    - bootstrap_image_entry.ansible_facts.getent_passwd[bootstrap_image_user] is not none
+  block:
+    - name: Пароль заблокирован, оболочка nologin
+      ansible.builtin.user:
+        name: "{{ bootstrap_image_user }}"
+        password_lock: true
+        shell: /usr/sbin/nologin
+
+    - name: Файл authorized_keys пользователя образа удалён
+      ansible.builtin.file:
+        path: "{{ bootstrap_image_entry.ansible_facts.getent_passwd[bootstrap_image_user][4] }}/.ssh/authorized_keys"
+        state: absent
+
+    - name: Правило sudo от cloud-init удалено
+      ansible.builtin.file:
+        path: /etc/sudoers.d/90-cloud-init-users
+        state: absent
+
+- name: Пользователь образа удалён
+  when:
+    - bootstrap_remove_image_user | default(false) | bool
+    - bootstrap_image_user | length > 0
+    - bootstrap_connect_user != bootstrap_image_user
+    - bootstrap_image_entry.ansible_facts.getent_passwd[bootstrap_image_user] is not none
+  block:
+    # Мультиплексированная сессия из bootstrap может быть жива; завершение — по логину, отсутствие сессий (код 1)
+    # не ошибка.
+    - name: Сессии пользователя образа завершены
+      ansible.builtin.command:
+        argv: [loginctl, terminate-user, "{{ bootstrap_image_user }}"]
+      register: bootstrap_terminate
+      changed_when: bootstrap_terminate.rc == 0
+      failed_when: bootstrap_terminate.rc not in [0, 1]
+
+    - name: Пользователь образа и его дом удалены
+      ansible.builtin.user:
+        name: "{{ bootstrap_image_user }}"
+        state: absent
+        remove: true

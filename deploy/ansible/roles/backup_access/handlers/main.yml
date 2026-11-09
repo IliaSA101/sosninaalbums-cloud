@@ -1,0 +1,13 @@
+---
+- name: Перечитать юниты systemd (бэкап)
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: restart sa-backup socket
+
+# Службы-экземпляры живут только на время подключения; запущенный сокет подхватывает новые настройки перезапуском
+# (restarted запускает и остановленный).
+- name: Перезапустить сокет забора
+  ansible.builtin.systemd_service:
+    name: sa-backup.socket
+    state: restarted
+  listen: restart sa-backup socket

@@ -1,0 +1,55 @@
+---
+# Внутренние значения роли (design 002 §11). Из inventory: backup_user (-e provision.sh), backup_ssh_key (открытый
+# ключ забора), backup_age_recipient (открытый ключ age владельца), backup_runtime_max, admin_user.
+backup_access_packages: [age, zstd, socat, tar]
+
+backup_access_libexec_dir: /usr/local/libexec
+backup_access_stream_dest: /usr/local/libexec/sa-backup-stream
+backup_access_restore_dest: /usr/local/libexec/sa-restore
+backup_access_conf_dir: /etc/sa-backup
+backup_access_recipients_dest: /etc/sa-backup/recipients
+backup_access_socket_dest: /etc/systemd/system/sa-backup.socket
+backup_access_service_dest: /etc/systemd/system/sa-backup@.service
+backup_access_restore_dir: /var/lib/sa-restore
+
+# Артефакты — из deploy/ по пути от playbook_dir (design 002 §1).
+backup_access_stream_src: "{{ playbook_dir }}/../backup/sa-backup-stream.sh"
+backup_access_restore_src: "{{ playbook_dir }}/../backup/sa-restore.sh"
+backup_access_socket_src: "{{ playbook_dir }}/../systemd/sa-backup.socket.j2"
+backup_access_service_src: "{{ playbook_dir }}/../systemd/sa-backup@.service.j2"
+
+# Дом пользователя бэкапа принадлежит root, как и authorized_keys в нём: сам пользователь свой ключ и команду
+# менять не может (StrictModes sshd принимает файл, принадлежащий root).
+backup_access_home: "/home/{{ backup_user }}"
+backup_access_authorized_keys: "/home/{{ backup_user }}/.ssh/authorized_keys"
+backup_access_command: socat -u UNIX-CONNECT:/run/sa-backup/stream.sock STDOUT
+# Тип и ключ — без комментария и без опций: опции задаёт только роль.
+# Имя пользователя ОС: строчные латинские, цифры, дефис и подчёркивание (идёт в sshd_config, пути и команды).
+backup_access_name_re: '^[a-z_][a-z0-9_-]{0,30}\Z'
+backup_access_key_re: '^(ssh-ed25519|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n"\\]*)?\Z'
+backup_access_key_line: "restrict,command=\"{{ backup_access_command }}\" {{ backup_ssh_key | regex_search('^[^ ]+ [^ ]+') }} sa-backup"
+# Открытый ключ age: «age1» и 58 знаков алфавита bech32 (контрольную сумму проверит сам age).
+backup_access_age_re: '^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}\Z'
+# Срок службы: число секунд, минут, часов или суток с единицей systemd; ноль и «infinity» не допускаются.
+backup_access_runtime_re: '^[1-9][0-9]{0,5}(s|min|h|d)?\Z'
+
+# Тест verify_restore_rejects: предел и uid работника (любой не root; в rootless-цели стенда — внутри карты 0-65535).
+backup_access_test_limit: 1048576
+backup_access_test_uid: 59000
+backup_access_test_gid: 59000
+backup_access_restore_script: "{{ backup_access_restore_dest }}"
+
+# Что видит служба копии в пустом корне (BindReadOnlyPaths= юнита в том виде, как его печатает systemctl show): ни
+# больше, ни меньше. Фильтр системных вызовов systemd печатает раскрытым списком, а не «@system-service»: проверяется,
+# что он есть, пропускает нужное (openat, read, getdents64) и не пропускает опасное.
+backup_access_bind_paths:
+  - /usr:/usr:rbind
+  - /usr/bin:/bin:rbind
+  - /usr/lib:/lib:rbind
+  - /usr/lib64:/lib64:rbind
+  - /etc/ld.so.cache:/etc/ld.so.cache:rbind
+  - /etc/sa-backup:/etc/sa-backup:rbind
+  - /etc/albums-svc:/etc/albums-svc:rbind
+  - /var/lib/albums-svc/data:/var/lib/albums-svc/data:rbind
+backup_access_syscall_need: [openat, read, write, getdents64, socket, connect]
+backup_access_syscall_deny: [mount, ptrace, reboot, init_module, kexec_load, bpf, open_by_handle_at, swapon]

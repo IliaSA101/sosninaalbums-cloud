@@ -1,0 +1,53 @@
+---
+# Всё, что попадёт в sshd_config, authorized_keys и команды, проверяется до первого изменения на хосте.
+# Значения секретов в сообщения не попадают (assert с секретами — под no_log).
+- name: Проверка имён пользователей
+  ansible.builtin.assert:
+    that:
+      - admin_user is defined
+      - admin_user is match(bootstrap_name_re)
+      - admin_user != 'root'
+      - backup_user is defined
+      - backup_user is match(bootstrap_name_re)
+      - backup_user != admin_user
+      - bootstrap_image_user == '' or bootstrap_image_user is match(bootstrap_name_re)
+      - bootstrap_image_user != admin_user
+      - bootstrap_image_user != 'root'
+      - bootstrap_connect_user is defined
+      - bootstrap_connect_user is match(bootstrap_name_re)
+      - bootstrap_connect_user in ['root', admin_user, bootstrap_image_user]
+    quiet: true
+    fail_msg: >-
+      admin_user, backup_user, image_user — строчные латинские имена, администратор не root, не пользователь
+      образа и не пользователь бэкапа; плей обязан задать bootstrap_connect_user — root, администратор или
+      пользователь образа (иначе прогон идёт под неизвестным именем, и блокировка пользователя образа
+      опиралась бы на неверное предположение)
+
+- name: Проверка ключей администратора и ключа контроллера
+  ansible.builtin.assert:
+    that:
+      - admin_ssh_keys is defined
+      - admin_ssh_keys is sequence
+      - admin_ssh_keys | length > 0
+      - admin_ssh_keys | reject('match', bootstrap_key_re) | list | length == 0
+      - sa_controller_pubkey is defined
+      - sa_controller_pubkey is match(bootstrap_key_re)
+      - (sa_controller_pubkey | regex_search('^[^ ]+ [^ ]+')) in (admin_ssh_keys | map('regex_search', '^[^ ]+ [^ ]+') | list)
+      - sa_ssh_args is defined
+      - sa_ssh_args is sequence
+      - sa_ssh_args is not string
+    quiet: true
+    fail_msg: >-
+      admin_ssh_keys — непустой список открытых ключей без опций; ключ, которым контроллер входит на сервер
+      (sa_controller_pubkey), обязан быть среди них, иначе проверка входа заперла бы хозяина; sa_ssh_args — список
+
+- name: Проверка пароля администратора
+  ansible.builtin.assert:
+    that:
+      - vault_admin_password is defined
+      - vault_admin_password | length >= 16
+      - vault_admin_password_hash is defined
+      - vault_admin_password_hash is match('^\$(y|6)\$[./A-Za-z0-9$]+\\Z')
+    quiet: true
+    fail_msg: пароль администратора — не короче 16 знаков, хэш — yescrypt или SHA-512 (mkpasswd)
+  no_log: true

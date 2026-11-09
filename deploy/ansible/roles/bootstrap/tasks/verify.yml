@@ -1,0 +1,81 @@
+---
+# Проверки роли (design 002 §12): запускает verify.yml под администратором, ничего не меняют. Положительные
+# проверки входа и sudo, а также отрицательные (root, пароль) делает стенд снаружи — из контейнера со своим
+# адресом, чтобы штрафы PerSourcePenalties не задели адрес контроллера; здесь — то, что видно на самом хосте.
+- name: "Проверка verify_sshd_effective: итоговая конфигурация sshd"
+  ansible.builtin.include_tasks: sshd_effective.yml
+  tags: [verify_sshd_effective]
+
+- name: "Проверка verify_users: passwd, shadow, группы"
+  ansible.builtin.command:
+    argv: [id, -nG, "{{ admin_user }}"]
+  register: bootstrap_admin_groups
+  changed_when: false
+  tags: [verify_users]
+
+- name: "Проверка verify_users: subuid и subgid администратора и пользователя бэкапа"
+  ansible.builtin.command:
+    argv: [grep, -c, -E, "^({{ admin_user }}|{{ backup_user }}):", /etc/subuid, /etc/subgid]
+  register: bootstrap_subid
+  changed_when: false
+  failed_when: bootstrap_subid.rc not in [0, 1]
+  tags: [verify_users]
+
+- name: "Проверка verify_resolved: LLMNR и mDNS выключены на всех связях"
+  ansible.builtin.include_tasks: resolved_check.yml
+  tags: [verify_resolved]
+
+- name: "Проверка verify_users: группа albums"
+  ansible.builtin.getent:
+    database: group
+    key: albums
+    fail_key: false
+  tags: [verify_users]
+
+# NOPASSWD в основном файле и в sudoers.d (след пользователя образа от cloud-init и прочее): sudo без пароля
+# обесценил бы пароль администратора. Закомментированные строки не в счёт.
+- name: "Проверка verify_users: NOPASSWD в sudoers"
+  ansible.builtin.command:
+    argv: [grep, -Ehrs, '^[^#]*NOPASSWD', /etc/sudoers, /etc/sudoers.d]
+  register: bootstrap_nopasswd
+  changed_when: false
+  failed_when: bootstrap_nopasswd.rc not in [0, 1]
+  tags: [verify_users]
+
+- name: "Проверка verify_users: состояние root"
+  ansible.builtin.command: passwd -S root
+  register: bootstrap_root_status
+  changed_when: false
+  tags: [verify_users]
+
+- name: "Проверка verify_users: администратор — sudo по паролю, без subuid, не в albums; root заблокирован"
+  ansible.builtin.assert:
+    that:
+      - "'sudo' in bootstrap_admin_groups.stdout.split()"
+      - "'albums' not in bootstrap_admin_groups.stdout.split()"
+      - bootstrap_subid.stdout_lines | map('regex_replace', '^[^:]*:', '') | map('int') | sum == 0
+      - (bootstrap_root_status.stdout.split())[1] in ['L', 'LK']
+      - bootstrap_nopasswd.stdout == ''
+      - ansible_facts.getent_group.albums is none or ansible_facts.getent_group.albums[2] == ''
+    quiet: true
+    fail_msg: администратор в группе albums, имеет subuid, root не заблокирован или в sudoers есть NOPASSWD (design §7, §9)
+  tags: [verify_users]
+
+# Файлы запуска, состав дома и authorized_keys администратора — отдельный файл задач: те же проверки идут и в конце
+# site.yml (каждый configure), и здесь (verify_users), без второй копии кода.
+- name: "Проверка verify_users: вход администратора не подменён (файлы запуска, дом, authorized_keys)"
+  ansible.builtin.include_tasks: verify_admin.yml
+  tags: [verify_users]
+
+- name: "Проверка verify_users: пользователь образа"
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ bootstrap_image_user }}"
+    fail_key: false
+  when: bootstrap_image_user | length > 0
+  tags: [verify_users]
+
+- name: "Проверка verify_users: пользователь образа заблокирован (после bootstrap) или удалён (после site)"
+  ansible.builtin.include_tasks: verify_image_user.yml
+  when: bootstrap_image_user | length > 0
+  tags: [verify_users]

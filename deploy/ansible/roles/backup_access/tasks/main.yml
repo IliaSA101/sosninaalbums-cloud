@@ -1,0 +1,153 @@
+---
+# Доступ к копии (design 002 §11): служба с одной способностью читает данные и конфиг, пользователь забора
+# запускает на её сокет только socat, поток шифруется ключом age владельца. Сервер копию расшифровать не может.
+- name: Значения inventory — формат
+  ansible.builtin.assert:
+    that:
+      - backup_user is defined and backup_user is regex(backup_access_name_re)
+      - backup_ssh_key is defined and backup_ssh_key is string and backup_ssh_key is regex(backup_access_key_re)
+      - backup_age_recipient is defined and backup_age_recipient is string and backup_age_recipient is regex(backup_access_age_re)
+      - backup_runtime_max is defined and backup_runtime_max | string is regex(backup_access_runtime_re)
+      - backup_user != admin_user and backup_user != 'albums' and backup_user != 'root'
+    quiet: true
+    fail_msg: >-
+      backup_user — имя пользователя ОС (не администратор, не albums, не root), backup_ssh_key — открытый ed25519 без опций,
+      backup_age_recipient — age1…, backup_runtime_max — срок службы вида 6h (design §11)
+
+- name: Пакеты age, zstd, socat, tar
+  ansible.builtin.apt:
+    name: "{{ backup_access_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Группа бэкапа
+  ansible.builtin.group:
+    name: "{{ backup_user }}"
+
+- name: Запись пользователя бэкапа в passwd
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ backup_user }}"
+    fail_key: false
+  register: backup_access_entry
+
+# Без subuid (иначе у него был бы uid процесса сервиса) и без создания дома: дом принадлежит root (ниже).
+- name: Создание пользователя бэкапа без subuid и subgid
+  ansible.builtin.command:
+    argv:
+      - useradd
+      - --no-create-home
+      - --home-dir
+      - "{{ backup_access_home }}"
+      - --gid
+      - "{{ backup_user }}"
+      - --shell
+      - /bin/sh
+      - -K
+      - SUB_UID_COUNT=0
+      - -K
+      - SUB_GID_COUNT=0
+      - "{{ backup_user }}"
+  when: backup_access_entry.ansible_facts.getent_passwd[backup_user] is none
+  changed_when: true
+
+# Оболочка /bin/sh нужна: её запускает command= из authorized_keys. Пароль «*»: вход только по ключу.
+- name: Пользователь бэкапа — оболочка, пароль «*», без дополнительных групп
+  ansible.builtin.user:
+    name: "{{ backup_user }}"
+    shell: /bin/sh
+    groups: ""
+    append: false
+    password: "*"
+    update_password: always
+
+- name: Пользователю бэкапа не положены subuid и subgid
+  ansible.builtin.lineinfile:
+    path: "/etc/{{ item }}"
+    regexp: "^{{ backup_user }}:"
+    state: absent
+  loop: [subuid, subgid]
+
+- name: Дом и .ssh пользователя бэкапа — root, без записи для него
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ backup_access_home }}"
+    - "{{ backup_access_home }}/.ssh"
+
+- name: Ключ забора — restrict и одна команда
+  ansible.builtin.copy:
+    content: "{{ backup_access_key_line }}\n"
+    dest: "{{ backup_access_authorized_keys }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Каталоги программ копии и получателя
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ backup_access_libexec_dir }}"
+    - "{{ backup_access_conf_dir }}"
+
+- name: Открытый ключ age получателя
+  ansible.builtin.copy:
+    content: "{{ backup_age_recipient }}\n"
+    dest: "{{ backup_access_recipients_dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Программа потока копии и программа разбора при возврате
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - {src: "{{ backup_access_stream_src }}", dest: "{{ backup_access_stream_dest }}"}
+    - {src: "{{ backup_access_restore_src }}", dest: "{{ backup_access_restore_dest }}"}
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Сокет и служба потока копии
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - {src: "{{ backup_access_socket_src }}", dest: "{{ backup_access_socket_dest }}"}
+    - {src: "{{ backup_access_service_src }}", dest: "{{ backup_access_service_dest }}"}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: restart sa-backup socket
+
+# Каталог возврата: вне data/, у администратора (поток копии ложится сюда по ssh; root только читает файл).
+- name: Каталог возврата копии у администратора
+  ansible.builtin.file:
+    path: "{{ backup_access_restore_dir }}"
+    state: directory
+    owner: "{{ admin_user }}"
+    group: "{{ admin_user }}"
+    mode: "0700"
+
+- name: Перечитать юниты и запустить сокет забора
+  ansible.builtin.meta: flush_handlers
+
+- name: Сокет забора включён и запущен
+  ansible.builtin.systemd_service:
+    name: sa-backup.socket
+    enabled: true
+    state: started

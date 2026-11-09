@@ -1,0 +1,6 @@
+---
+# Внутренние значения роли. Пакеты — из Debian (design 002 §10): podman и uidmap — rootless, dbus-user-session —
+# шина сессии пользователя albums, acl — setfacl и модули под не-root (роль bootstrap ставит его раньше).
+podman_packages: [podman, uidmap, dbus-user-session, acl]
+# Юниты, которые не нужны: API-сокет никому не положен, автообновление образов — этап 7 (скрипт, не таймер Podman).
+podman_masked_units: [podman.socket, podman-auto-update.timer]

@@ -1,0 +1,50 @@
+---
+# Агент провайдера (qemu-guest-agent) с белым списком команд (design 002 §10). Юнит запускает udev, когда
+# появляется виртуальный порт агента; сам он без [Install], поэтому enable не нужен — нужны файл настроек и
+# drop-in. Они ложатся ДО установки пакета: агент, запущенный сразу после установки, уже видит список.
+- name: Каталоги настроек и drop-in агента
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/qemu
+    - /etc/systemd/system/qemu-guest-agent.service.d
+
+- name: Файл настроек агента с белым списком команд
+  ansible.builtin.template:
+    src: sa-qga.conf.j2
+    dest: "{{ guest_agent_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload qemu-guest-agent
+
+- name: Drop-in юнита агента (ExecStart со своим файлом настроек)
+  ansible.builtin.template:
+    src: sa.conf.j2
+    dest: /etc/systemd/system/qemu-guest-agent.service.d/sa.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload qemu-guest-agent
+
+- name: Перечитывание юнитов до установки пакета
+  ansible.builtin.meta: flush_handlers
+
+- name: Пакет qemu-guest-agent
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Запущенный агент (образ провайдера ставит его заранее) работает со старым списком до перезапуска.
+- name: Перезапуск запущенного агента после установки
+  ansible.builtin.meta: flush_handlers
+
+# Прогон падает здесь же: агент с лишними командами нельзя оставлять до отдельного шага verify.
+- name: Действующая конфигурация агента — ровно белый список
+  ansible.builtin.include_tasks: verify_effective.yml

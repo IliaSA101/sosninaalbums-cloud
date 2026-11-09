@@ -1,0 +1,24 @@
+---
+# Внутренние значения роли (не настройки inventory). Имена — с префиксом роли (ansible-lint var-naming).
+# Что приходит из inventory: admin_user, admin_ssh_keys, backup_user, image_user (необязательно),
+# vault_admin_password, vault_admin_password_hash, sa_ssh_args, sa_controller_pubkey.
+# Что задаёт плей: bootstrap_connect_user (кем идёт прогон), bootstrap_remove_image_user (только site.yml).
+
+# Имя пользователя ОС: попадает в sshd_config, пути и команды — только строчные латинские и цифры.
+bootstrap_name_re: '^[a-z_][a-z0-9_-]{0,30}\Z'
+# Открытый ключ — только ed25519 (в том числе FIDO2), одной строкой, без опций (command=, from= и прочее ставит
+# только роль бэкапа сама),
+# без перевода строки внутри: иначе в authorized_keys уехали бы лишние записи.
+bootstrap_key_re: '^(ssh-ed25519|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?\Z'
+# Контейнеры (в том числе цель стенда): юниты с ConditionVirtualization=!container там не запускаются.
+bootstrap_container_types: [container, podman, docker, lxc, systemd-nspawn, openvz]
+bootstrap_sshd_conf: /etc/ssh/sshd_config.d/00-sa.conf
+bootstrap_image_user: "{{ image_user | default('') }}"
+bootstrap_admin_home: "/home/{{ admin_user }}"
+bootstrap_ssh_target: "{{ ansible_host | default(inventory_hostname) }}"
+bootstrap_ssh_port: "{{ ansible_port | default(22) }}"
+# systemd-resolved: drop-in читается по порядку имён, побеждает ПОСЛЕДНИЙ файл (resolved.conf.d из /etc, /run, /usr/lib).
+# 99-, а не 00-: 00- перекрыл бы любой файл пакета или cloud-init. У sshd наоборот (первое значение), поэтому там 00-sa.conf.
+bootstrap_resolved_dropin: /etc/systemd/resolved.conf.d/99-sa.conf
+# systemd-resolved работает (по service_facts; нет службы или факта — false): самопроверка LLMNR/mDNS только при работающей.
+bootstrap_resolved_running: "{{ (ansible_facts.services | default({})).get('systemd-resolved.service', {}).get('state', '') == 'running' }}"

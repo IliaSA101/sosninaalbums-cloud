@@ -1,0 +1,199 @@
+# Caddyfile albums-svc (design 001 §1, §5.6, §7). Домен и прочее окружение — только из переменных среды юнита
+# Caddy (EnvironmentFile от роли Ansible; значения лежат в приватном inventory):
+#   ALBUMS_DOMAIN — имя сайта без схемы (обязательно: без него Caddy не стартует, проверяет caddy-validate.sh).
+# Сокет сервиса — /run/albums-svc/http.sock, каталог общий с контейнером (deploy/quadlet/, deploy/systemd/).
+# Страница «Альбом не найден» — /usr/share/albums-svc/errors/notfound.html: копия web/viewer/notfound.html,
+# один источник с сервисом (design §1).
+# Версия Caddy — 2.11.x из официального apt-репозитория Caddy (deploy/README.md); директивы ниже на более
+# старых версиях (пакет Debian 2.6.2) не проверялись и не поддерживаются.
+# Проверка: deploy/tests/caddy-validate.sh (caddy validate в контейнере по дайджесту образа).
+# Сниппеты стоят выше глобального блока: Caddy разбирает файл сверху вниз, import до определения не находит.
+
+# Фильтр журнала (design §7): путь альбома — ключ доступа, поэтому в журнал идёт только первый сегмент пути,
+# остальное — «…», строка запроса отброшена. ОДИН regexp, а не набор по маршрутам: перечень путей
+# (/a/, /A/, //a/, /%61/, /v1/../a/, /a%2F<id>/, /a;<id>/ …) всегда неполон. Сегмент ограничен 8 знаками
+# [A-Za-z0-9]: так «/<id>/x» (id на месте первого сегмента) даёт не больше 8 знаков, а всё после «%», «;», «\»
+# отбрасывается. /a/…, /v1/…, /viewer/… остаются читаемыми.
+# Адрес клиента — маска /24 и /48; заголовки запроса (Authorization, Cookie, Referer, X-Sa-*) и ответа
+# (Set-Cookie, Location с id) не пишутся вовсе.
+(logfilters) {
+	fields {
+		request>uri regexp ^(/[A-Za-z0-9]{0,8})?.*$ ${1}/…
+		request>remote_ip ip_mask {
+			ipv4 24
+			ipv6 48
+		}
+		request>client_ip ip_mask {
+			ipv4 24
+			ipv6 48
+		}
+		request>headers delete
+		request>remote_port delete
+		resp_headers delete
+	}
+}
+
+# Заголовки безопасности для ответов Caddy; «?» — ставить, только если сервис свой не поставил
+# (у картинок свой CSP с sandbox, у HTML — свой, design §5.6). Server и Via убираем: не нужны.
+# Одно поле — одна директива header, НЕ общий блок: по `caddy adapt` все «?»-поля одного блока складываются в одно
+# условие «И» (ответ не содержит ни одного из них), и при любом уже присутствующем поле не ставится НИ ОДНО
+# (X-Content-Type-Options стоит у каждого ответа сервиса — CSP на /viewer/ и все заголовки на /v1 не ставились;
+# нашёл стенд П1). Строки без «?» (HSTS, -Server) в этом блоке работали. HSTS — отложенный «>»: ставится при
+# записи заголовков ответа, после reverse_proxy, и затирает любое значение.
+# «-Via»: reverse_proxy добавляет «Via: 1.1 Caddy» к ответам сервиса (header_down его не снимает: Via ставится
+# позже); в 404 самого Caddy (handle_errors) его нет, а все 404 обязаны совпадать по заголовкам (design §5.1).
+(secheaders) {
+	header >Strict-Transport-Security "max-age=31536000"
+	header ?X-Content-Type-Options nosniff
+	header ?Referrer-Policy no-referrer
+	header ?X-Robots-Tag "noindex, nofollow"
+	header ?Cross-Origin-Resource-Policy same-origin
+	header ?X-Frame-Options DENY
+	header ?Content-Security-Policy "default-src 'none'; script-src https://{$ALBUMS_DOMAIN}/viewer/; style-src https://{$ALBUMS_DOMAIN}/viewer/; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	header -Server
+	header -Via
+}
+
+# Общая часть прокси: сокет без сетевого транспорта; клиент и X-Sa-* — только то, что ставит Caddy.
+(proxy_common) {
+	# X-Sa-Client-IP выставляет Caddy; Set затирает значение, присланное клиентом.
+	header_up X-Sa-Client-IP {remote_host}
+	transport http {
+		dial_timeout 2s
+		response_header_timeout 120s
+	}
+}
+
+# Срез входящих X-Sa-* и X-Forwarded-* до проксирования (design §1): сервис доверяет только X-Sa-Client-IP.
+# После среза reverse_proxy сам ставит свои X-Forwarded-For/Host/Proto по настоящему соединению;
+# сервис их не читает.
+(strip_in) {
+	request_header -X-Sa-*
+	request_header -X-Forwarded-*
+}
+
+# /v1: тело (страница до 15 МБ) идёт потоком, без буфера.
+(upstream) {
+	import strip_in
+	reverse_proxy unix//run/albums-svc/http.sock {
+		import proxy_common
+	}
+}
+
+# /a/ и /viewer/: тела маленькие; Caddy читает до 4 КиБ целиком, прежде чем звать сервис, — лишнее
+# обрывается по пределу до обращения к сервису, а не после того, как сервис ответил, не читая тело.
+(upstream_buffered) {
+	import strip_in
+	reverse_proxy unix//run/albums-svc/http.sock {
+		request_buffers 4KiB
+		import proxy_common
+	}
+}
+
+{
+	# Админ-API не нужен: конфиг меняется только перезапуском юнита.
+	admin off
+
+	servers {
+		# Проверка имени в TLS ClientHello против хоста запроса: запросы по IP или чужому имени не доходят
+		# до обработчиков.
+		strict_sni_host on
+		# Только HTTP/1.1 и HTTP/2: на HTTP/3 (QUIC) тайм-ауты ниже не действуют, а он здесь не нужен.
+		protocols h1 h2
+		timeouts {
+			# Тайм-ауты — design §1: на чтение тела и запись 600 с, не меньше наибольшего срока чтения
+			# страницы у сервиса (540 с), иначе Caddy оборвёт медленную, но законную выгрузку.
+			read_header 10s
+			read_body 600s
+			write 600s
+			idle 2m
+		}
+	}
+
+	# Журнал самого Caddy (в том числе ошибки: 502 при остановленном сервисе пишет URI запроса целиком —
+	# поэтому те же фильтры, что у журнала доступа).
+	log {
+		output stderr
+		format filter {
+			wrap json
+			import logfilters
+		}
+	}
+}
+
+{$ALBUMS_DOMAIN} {
+	import secheaders
+
+	log {
+		output stderr
+		format filter {
+			wrap json
+			import logfilters
+		}
+	}
+
+	# Предел тела по маршрутам (design §1), в КиБ/МиБ (КБ и МБ у Caddy — десятичные): 16 МиБ — /v1
+	# (страница до 15 МиБ и обвязка), 4 КиБ — форма входа, 1 КиБ — остальное.
+	handle /v1/* {
+		request_body {
+			max_size 16MiB
+		}
+		import upstream
+	}
+
+	# В сервис идут только /a/… и /viewer/…; точный шаблон пути проверяет сам сервис (design §5.1),
+	# Caddy путь не переписывает.
+	@login {
+		method POST
+		path /a/*/login
+	}
+	handle @login {
+		request_body {
+			max_size 4KiB
+		}
+		import upstream_buffered
+	}
+
+	handle /a/* {
+		request_body {
+			max_size 1KiB
+		}
+		import upstream_buffered
+	}
+
+	handle /viewer/* {
+		request_body {
+			max_size 1KiB
+		}
+		import upstream_buffered
+	}
+
+	# Всё остальное (в том числе /, /favicon.ico, /meta/…) — единый 404 из handle_errors.
+	handle {
+		error "не найдено" 404
+	}
+
+	# Свои ответы Caddy (404 вне маршрутов, 502 при остановленном сервисе, 413 по пределу тела): тело —
+	# notfound.html с кодом ошибки, заголовки как у сервиса (design §5.6); страницы не кэшируются.
+	# Etag/Last-Modified/Accept-Ranges/Vary ставит file_server (время изменения файла и поддержку сжатия) — убираем.
+	handle_errors {
+		import secheaders
+		header Cache-Control no-store
+		header -Etag
+		header -Last-Modified
+		header -Accept-Ranges
+		# file_server добавляет «Vary: Accept-Encoding»; у 404 сервиса его нет.
+		header -Vary
+		# Свой ответ — всегда целиком и одни и те же байты: Range и условные запросы file_server иначе выполнил бы
+		# (206, 304, 412 вместо 404/413/502); у сервиса они на 404 не действуют.
+		request_header -Range
+		request_header -If-Range
+		request_header -If-Modified-Since
+		request_header -If-None-Match
+		request_header -If-Match
+		request_header -If-Unmodified-Since
+		root * /usr/share/albums-svc/errors
+		rewrite * /notfound.html
+		file_server
+	}
+}

@@ -1,0 +1,15 @@
+---
+# Пример ~/inventory/ansible/group_vars/all/vault.yml ДО шифрования; в inventory файл хранится
+# только зашифрованным (ansible-vault, пароль vault — в файле секретов раскатки). Значения выдуманные.
+
+# Как создать: в контейнере контроллера на консоли учётной записи раскатки (runbook, deploy/README.md) —
+# случайные значения, хэш `mkpasswd --method=yescrypt`, шифрование `ansible-vault encrypt` с паролем каналом.
+# Пароль администратора нужен и для sudo (плеи берут его из vault_admin_password), и для веб-консоли.
+
+# Главный секрет сервиса: base64url, не менее 32 байт (albums-svc -gen-secret).
+vault_albums_master: "ZXhhbXBsZS1leGFtcGxlLWV4YW1wbGUtZXhhbXBsZS0xMjM"
+
+# Пароль администратора: для sudo и веб-консоли провайдера; хэш — yescrypt (mkpasswd), с постоянной солью,
+# иначе повторный прогон видит изменение.
+vault_admin_password: "example-admin-password-not-real"
+vault_admin_password_hash: "$y$j9T$exampleexample$exampleexampleexampleexampleexampleexamp"
