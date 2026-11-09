@@ -1,0 +1,76 @@
+---
+# Проверки состояния на самом хосте (design 002 §12), ничего не меняют. Запускает стенд после converge:
+# теги verify_* — по отдельности (например, --tags verify_listeners). Проверки снизу — отрицательные входы
+# root и по паролю, порты снаружи — стенд делает сам, из отдельного контейнера (verify.sh).
+# Теги на include_role — объединение тегов роли (чтобы include выполнился), без apply: у каждой проверки внутри
+# роли свой тег, и `--tags verify_listeners` не запускает остальные проверки роли.
+- name: Проверки состояния хоста
+  hosts: all
+  remote_user: "{{ admin_user }}"
+  become: true
+  gather_facts: false
+  vars:
+    bootstrap_connect_user: "{{ admin_user }}"
+    # Соединение и sudo: аргументы ssh — те же, что у пробных входов роли; пароль sudo — из vault.
+    ansible_ssh_common_args: "{{ sa_ssh_args | map('quote') | join(' ') }}"
+    ansible_become_password: "{{ vault_admin_password }}"
+  tasks:
+    - name: Проверки bootstrap (sshd, пользователи)
+      ansible.builtin.include_role:
+        name: bootstrap
+        tasks_from: verify.yml
+      tags: [verify_sshd_effective, verify_users, verify_resolved]
+
+    - name: Проверки nftables (порты, интерфейсы, слушатели)
+      ansible.builtin.include_role:
+        name: nftables
+        tasks_from: verify.yml
+      tags: [verify_nft_ports, verify_nft_no_iface_exceptions, verify_listeners]
+
+    - name: Проверки unattended-upgrades
+      ansible.builtin.include_role:
+        name: upgrades
+        tasks_from: verify.yml
+      tags: [verify_upgrades]
+
+    - name: Проверки journald
+      ansible.builtin.include_role:
+        name: journald
+        tasks_from: verify.yml
+      tags: [verify_journald]
+
+    - name: Проверки агента провайдера
+      ansible.builtin.include_role:
+        name: guest_agent
+        tasks_from: verify.yml
+      tags: [verify_guest_agent]
+
+    - name: Проверки cloud-init
+      ansible.builtin.include_role:
+        name: cloud_init
+        tasks_from: verify.yml
+      tags: [verify_cloud_init]
+
+    - name: Проверки Podman
+      ansible.builtin.include_role:
+        name: podman
+        tasks_from: verify.yml
+      tags: [verify_podman]
+
+    - name: Проверки Caddy
+      ansible.builtin.include_role:
+        name: caddy
+        tasks_from: verify.yml
+      tags: [verify_caddy, caddy_key_fingerprint]
+
+    - name: Проверки сервиса (пользователь, subuid, файлы, ACL)
+      ansible.builtin.include_role:
+        name: albums_svc
+        tasks_from: verify.yml
+      tags: [verify_albums, verify_acl]
+
+    - name: Проверки доступа к копии (файлы, пользователь, сокет, отказы возврата)
+      ansible.builtin.include_role:
+        name: backup_access
+        tasks_from: verify.yml
+      tags: [verify_backup, verify_restore_rejects]

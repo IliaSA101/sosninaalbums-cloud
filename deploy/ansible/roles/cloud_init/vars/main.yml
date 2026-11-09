@@ -1,0 +1,15 @@
+---
+cloud_init_sa_cfg: /etc/cloud/cloud.cfg.d/zz-sa.cfg
+# Прежнее имя файла: 99-sa.cfg читался раньше, чем 99_provider.cfg и подобные, и его перекрывали.
+cloud_init_old_sa_cfg: /etc/cloud/cloud.cfg.d/99-sa.cfg
+cloud_init_disabled_file: /etc/cloud/cloud-init.disabled
+# Итоговые списки читает функция самого cloud-init (files/effective_modules.py): cloud.cfg плюс cloud.cfg.d
+# по алфавиту. Список в cloud.cfg.d заменяет исходный целиком, поэтому роль пишет полные копии списков
+# без запрещённых модулей, а файл называет так, чтобы он читался последним.
+cloud_init_stages:
+  - cloud_init_modules
+  - cloud_config_modules
+  - cloud_final_modules
+# Запрещённые модули (пользователи, пароли, ключи, импорт ключей) перечислены в files/effective_modules.py: имена
+# cloud-init нормализует, поэтому сверка идёт по каноническому имени из самого cloud-init, а не по строке.
+cloud_init_script: "{{ lookup('ansible.builtin.file', 'effective_modules.py') }}"

@@ -1,0 +1,224 @@
+---
+# Проверки роли (design 002 §8, §12): верен ли итог на хосте — версия и закрепление, ключ, источник, файлы, служба.
+# Ничего не меняют. Порт 80 → 308 из соседнего контейнера проверяет стенд (verify.sh).
+- name: "Проверка verify_caddy: закрепление версии (apt-cache policy)"
+  ansible.builtin.command:
+    argv: [apt-cache, policy, caddy]
+  register: caddy_policy
+  changed_when: false
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: установлена и выбрана ровно закреплённая версия из репозитория Caddy"
+  ansible.builtin.assert:
+    that:
+      - caddy_installed_line | length == 1
+      - "caddy_installed_line[0] is regex('^\\s*Installed: ' ~ (caddy_version | regex_escape) ~ '[-.+~0-9a-z]*$')"
+      - caddy_candidate_line | length == 1
+      - "caddy_candidate_line[0] is regex('^\\s*Candidate: ' ~ (caddy_version | regex_escape) ~ '[-.+~0-9a-z]*$')"
+      - caddy_policy.stdout is search('1001')
+      - caddy_policy.stdout is search('dl\.cloudsmith\.io/public/caddy/stable/deb/debian')
+    quiet: true
+    fail_msg: Caddy не закреплён на {{ caddy_version }} из репозитория Caddy (apt-cache policy расходится с design §8)
+  vars:
+    caddy_installed_line: "{{ caddy_policy.stdout_lines | select('match', '^\\s*Installed:') | list }}"
+    caddy_candidate_line: "{{ caddy_policy.stdout_lines | select('match', '^\\s*Candidate:') | list }}"
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: отпечаток ключа репозитория на хосте"
+  ansible.builtin.command:
+    argv: [python3, -I, "-", "{{ caddy_key_dest }}"]
+    stdin: "{{ lookup('ansible.builtin.file', 'key_fingerprints.py') }}"
+    chdir: /
+  register: caddy_key_host_fp
+  changed_when: false
+  tags: [verify_caddy, caddy_key_fingerprint]
+
+- name: "Проверка verify_caddy: на хосте ровно один основной ключ — с отпечатком из design"
+  ansible.builtin.assert:
+    that: (caddy_key_host_fp.stdout | from_json).primary == [caddy_key_fingerprint]
+    quiet: true
+    fail_msg: ключ репозитория Caddy на хосте подменён (основных ключей не один или отпечаток другой)
+  tags: [verify_caddy, caddy_key_fingerprint]
+
+- name: "Проверка verify_caddy: содержимое файлов (checksum), владельцы и права"
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    checksum_algorithm: sha256
+  register: caddy_files
+  loop:
+    - dest: "{{ caddy_key_dest }}"
+      sum: "{{ lookup('ansible.builtin.file', caddy_key_src, rstrip=false) | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+    - dest: "{{ caddy_sources_dest }}"
+      sum: "{{ lookup('ansible.builtin.template', 'caddy-stable.sources.j2') | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+    - dest: "{{ caddy_prefs_dest }}"
+      sum: "{{ lookup('ansible.builtin.template', 'caddy.pref.j2') | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+    - dest: "{{ caddy_dir }}/Caddyfile"
+      sum: "{{ lookup('ansible.builtin.file', caddy_caddyfile_src, rstrip=false) | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+    - dest: "{{ caddy_env_dest }}"
+      sum: "{{ lookup('ansible.builtin.template', 'albums.env.j2') | hash('sha256') }}"
+      owner: root
+      group: caddy
+      mode: "0640"
+    - dest: "{{ caddy_dropin_dest }}"
+      sum: "{{ lookup('ansible.builtin.file', caddy_dropin_src, rstrip=false) | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+    - dest: "{{ caddy_errors_dir }}/notfound.html"
+      sum: "{{ lookup('ansible.builtin.file', caddy_notfound_src, rstrip=false) | hash('sha256') }}"
+      owner: root
+      group: root
+      mode: "0644"
+  loop_control:
+    label: "{{ item.dest }}"
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: файлы совпадают с репозиторием раскатки"
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.checksum == item.item.sum
+      - item.stat.pw_name == item.item.owner
+      - item.stat.gr_name == item.item.group
+      - item.stat.mode == item.item.mode
+    quiet: true
+    fail_msg: "{{ item.item.dest }}: содержимое, владелец или права расходятся с репозиторием раскатки (design §5)"
+  loop: "{{ caddy_files.results }}"
+  loop_control:
+    label: "{{ item.item.dest }}"
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: версия бинарника"
+  ansible.builtin.command:
+    argv: [/usr/bin/caddy, version]
+  register: caddy_bin_version
+  changed_when: false
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: caddy validate с доменом из окружения юнита"
+  ansible.builtin.command:
+    argv: [/usr/bin/caddy, validate, --adapter, caddyfile, --config, "{{ caddy_dir }}/Caddyfile"]
+  environment:
+    ALBUMS_DOMAIN: "{{ albums_domain }}"
+  register: caddy_validate
+  changed_when: false
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: юнит — окружение из albums.env, включён и запущен"
+  ansible.builtin.systemd_service:
+    name: caddy.service
+  register: caddy_unit
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: версия бинарника, юнит включён и активен, EnvironmentFile на месте"
+  ansible.builtin.assert:
+    that:
+      - caddy_bin_version.stdout.startswith('v' ~ caddy_version)
+      - caddy_unit.status.UnitFileState == 'enabled'
+      - caddy_unit.status.ActiveState == 'active'
+      - caddy_env_dest in caddy_unit.status.EnvironmentFiles
+    quiet: true
+    fail_msg: Caddy не той версии, не включён, не запущен или юнит не читает albums.env (design §8)
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: каталог состояния (сертификаты), пользователь и дом caddy"
+  ansible.builtin.stat:
+    path: "{{ caddy_home }}"
+  register: caddy_home_stat
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: запись пользователя caddy"
+  ansible.builtin.getent:
+    database: passwd
+    key: caddy
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: policy-rc.d нет (он живёт только на время установки)"
+  ansible.builtin.stat:
+    path: "{{ caddy_policy_rc }}"
+  register: caddy_policy_left
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: дом caddy — каталог 0700 caddy:caddy, policy-rc.d отсутствует"
+  ansible.builtin.assert:
+    that:
+      - caddy_home_stat.stat.exists and caddy_home_stat.stat.isdir
+      - caddy_home_stat.stat.pw_name == 'caddy' and caddy_home_stat.stat.gr_name == 'caddy'
+      - caddy_home_stat.stat.mode == '0700'
+      - ansible_facts.getent_passwd.caddy[4] == caddy_home
+      - not caddy_policy_left.stat.exists
+    quiet: true
+    fail_msg: >-
+      нет каталога {{ caddy_home }} caddy:caddy 0700 (дом caddy в passwd — он же) или остался {{ caddy_policy_rc }}:
+      без дома TLS не поднимется, запрет запуска служб блокировал бы перезапуски после обновлений (design §8)
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: права юнита — как их видит systemd"
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - caddy.service
+      - --property=CapabilityBoundingSet,AmbientCapabilities,NoNewPrivileges,ProtectHome,ProtectKernelTunables
+      - --property=ProtectKernelModules,ProtectKernelLogs,RestrictNamespaces,SystemCallFilter,SystemCallArchitectures
+      - --property=ExecStart,User,Group,PrivateDevices,RestrictAddressFamilies,LockPersonality,ProtectSystem
+  register: caddy_show
+  changed_when: false
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: одна способность (CAP_NET_BIND_SERVICE), без повышения прав, суженные системные вызовы"
+  ansible.builtin.assert:
+    that:
+      - "'CapabilityBoundingSet=cap_net_bind_service' in caddy_show.stdout_lines"
+      - "'AmbientCapabilities=cap_net_bind_service' in caddy_show.stdout_lines"
+      - "'NoNewPrivileges=yes' in caddy_show.stdout_lines"
+      - "'ProtectHome=yes' in caddy_show.stdout_lines"
+      - "'ProtectKernelTunables=yes' in caddy_show.stdout_lines"
+      - "'ProtectKernelModules=yes' in caddy_show.stdout_lines"
+      - "'ProtectKernelLogs=yes' in caddy_show.stdout_lines"
+      - "'RestrictNamespaces=yes' in caddy_show.stdout_lines"
+      - "'SystemCallArchitectures=native' in caddy_show.stdout_lines"
+      - caddy_syscalls | length > 0
+      - "['openat', 'read', 'write', 'socket', 'bind', 'accept4'] | difference(caddy_syscalls) | length == 0"
+      - "['mount', 'ptrace', 'reboot', 'init_module', 'kexec_load', 'bpf', 'swapon'] | intersect(caddy_syscalls) | length == 0"
+      - "'User=caddy' in caddy_show.stdout_lines"
+      - caddy_show.stdout is search('path=/usr/bin/caddy ; argv\[\]=/usr/bin/caddy run --config /etc/caddy/Caddyfile ;')
+      - caddy_show.stdout is not search('--environ')
+      - "'PrivateDevices=yes' in caddy_show.stdout_lines"
+      - "'LockPersonality=yes' in caddy_show.stdout_lines"
+      - "'ProtectSystem=full' in caddy_show.stdout_lines"
+      - caddy_families | sort == ['AF_INET', 'AF_INET6', 'AF_NETLINK', 'AF_UNIX']
+    quiet: true
+    fail_msg: права или ExecStart юнита Caddy не такие, как в design §8 (одна способность, NoNewPrivileges, без --environ)
+  vars:
+    caddy_families_line: "{{ caddy_show.stdout_lines | select('match', '^RestrictAddressFamilies=') | first | default('=') }}"
+    caddy_families: "{{ caddy_families_line.split('=', 1)[1].split() }}"
+    caddy_syscalls: >-
+      {{ (caddy_show.stdout_lines | select('match', '^SystemCallFilter=') | first | default('=')).split('=', 1)[1].split() }}
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: caddy-api.service замаскирован"
+  ansible.builtin.stat:
+    path: /etc/systemd/system/caddy-api.service
+  register: caddy_api_mask
+  tags: [verify_caddy]
+
+- name: "Проверка verify_caddy: маска caddy-api.service — симлинк на /dev/null"
+  ansible.builtin.assert:
+    that: caddy_api_mask.stat.islnk | default(false) and caddy_api_mask.stat.lnk_source == '/dev/null'
+    quiet: true
+    fail_msg: caddy-api.service не замаскирован (в Caddyfile admin off, API по HTTP не нужен)
+  tags: [verify_caddy]

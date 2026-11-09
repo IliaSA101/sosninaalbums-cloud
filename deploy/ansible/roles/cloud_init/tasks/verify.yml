@@ -1,0 +1,27 @@
+---
+# Проверки роли (design 002 §10, §12): итоговая конфигурация cloud-init, а не состояние самого cloud-init: на
+# стенде он `disabled` (контейнер), на аренде — работает.
+- name: "Проверка verify_cloud_init: итоговая конфигурация"
+  ansible.builtin.include_tasks: verify_effective.yml
+  tags: [verify_cloud_init]
+
+- name: "Проверка verify_cloud_init: признак выключения"
+  ansible.builtin.stat:
+    path: "{{ cloud_init_disabled_file }}"
+  register: cloud_init_disabled
+  tags: [verify_cloud_init]
+
+- name: "Проверка verify_cloud_init: старого 99-sa.cfg нет, полное выключение — как задано переменной"
+  ansible.builtin.stat:
+    path: "{{ cloud_init_old_sa_cfg }}"
+  register: cloud_init_old
+  tags: [verify_cloud_init]
+
+- name: "Проверка verify_cloud_init: cloud-init.disabled соответствует cloud_init_disable"
+  ansible.builtin.assert:
+    that:
+      - cloud_init_disabled.stat.exists == (cloud_init_disable | bool)
+      - not cloud_init_old.stat.exists
+    quiet: true
+    fail_msg: cloud-init.disabled не соответствует cloud_init_disable или остался старый 99-sa.cfg
+  tags: [verify_cloud_init]

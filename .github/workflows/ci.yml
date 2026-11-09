@@ -1,0 +1,114 @@
+name: CI
+
+# Проверки идут на ветках ci/<имя>: в них node scripts/ci-push.mjs кладёт коммит-сироту (без истории dev).
+# workflow_dispatch — ручной запуск на выбранной ветке. pull_request_target не используется: он выдал бы
+# коду из чужой ветки токен с правом записи, а секретов и внешних вкладов здесь нет.
+# Сами проверки — в checks.yml (design 004 §1): его же зовёт release.yml по метке выпуска. Подписей и публикации
+# здесь нет и быть не может: права только на чтение (workflow_guard.py отказывает на любом write вне release.yml).
+on:
+  push:
+    branches: ["ci/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Новая отправка той же ветки отменяет прежний прогон: ветка одноразовая, старый результат не нужен.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      version: ci
+
+  # Разведка раннера: есть ли KVM и контейнерный движок. От ответа зависит, можно ли проверять роль Ansible
+  # на Debian 13 в виртуальной машине прямо в CI. Ничего не проверяет и не падает.
+  probe:
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    steps:
+      - name: раннер
+        run: |
+          uname -a
+          nproc
+          free -h
+          ls -l /dev/kvm || echo "нет /dev/kvm"
+          podman --version || echo "podman: нет"
+          docker --version || echo "docker: нет"
+
+  # Сверка раннеров (design 004 §6): все задания прогона, всех попыток, обязаны идти на размещённых раннерах
+  # GitHub. Текст шага побайтово равен шагу в release-attest (проверяет workflow_guard.py); здесь он обкатывается
+  # на каждой ветке ci/*, а имена заданий повторно используемого workflow и группа раннеров уточняются по ответу.
+  runner-check:
+    needs: [probe, checks]
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Сверка раннеров прогона через API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SA_REQUIRED_JOBS: checks / build-image;checks / stand-full
+        run: |
+          out="$RUNNER_TEMP/runner-jobs.json"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100" >"$out"
+          python3 -I - "$out" <<'PY'
+          import json, os, sys
+          # GitHub-hosted runner group: values are from memory (design 004 section 10), confirm on ci/*.
+          GROUP_ID = 0
+          GROUP_NAME = "GitHub Actions"
+          required = [s for s in os.environ["SA_REQUIRED_JOBS"].split(";") if s]
+          me = os.environ.get("GITHUB_JOB", "")
+          text = open(sys.argv[1], encoding="utf-8").read()
+          dec, pos, jobs = json.JSONDecoder(), 0, []
+          while True:
+              while pos < len(text) and text[pos].isspace():
+                  pos += 1
+              if pos >= len(text):
+                  break
+              page, pos = dec.raw_decode(text, pos)
+              jobs.extend(page.get("jobs") or [])
+          def hosted(j):
+              return j.get("runner_group_id") == GROUP_ID and j.get("runner_group_name") == GROUP_NAME
+          def attempt(j):
+              a = j.get("run_attempt")
+              return a if type(a) is int else None
+          def is_copy(j):
+              # Rerun copies a finished job from an earlier attempt: same name and runner_id, group id null.
+              # Valid only if that earlier attempt has the original of the same name and runner_id on the right group,
+              # and the original succeeded (GitHub copies only successful jobs).
+              a = attempt(j)
+              if a is None or j.get("runner_id") is None or j.get("runner_group_id") is not None:
+                  return False
+              if j.get("runner_group_name") != GROUP_NAME:
+                  return False
+              for o in jobs:
+                  b = attempt(o)
+                  if b is not None and b < a and o.get("name") == j.get("name") and o.get("runner_id") == j.get("runner_id") and hosted(o) and o.get("conclusion") == "success":
+                      return True
+              return False
+          bad, seen = [], set()
+          if not jobs:
+              bad.append("empty answer")
+          for j in jobs:
+              name = str(j.get("name"))
+              if name == me and j.get("status") == "in_progress":
+                  continue
+              if j.get("runner_id") is None and not j.get("runner_name"):
+                  if j.get("conclusion") not in ("skipped", "cancelled"):
+                      bad.append(name + ": no runner, conclusion " + str(j.get("conclusion")))
+                  continue
+              if not hosted(j) and not is_copy(j):
+                  bad.append(name + ": runner group " + str(j.get("runner_group_id")) + " / " + str(j.get("runner_group_name")))
+              if j.get("conclusion") == "success":
+                  seen.add(name)
+          bad += ["missing job with success: " + r for r in required if r not in seen]
+          for line in bad:
+              print("runner-check: " + line, file=sys.stderr)
+          sys.exit(1 if bad else 0)
+          PY

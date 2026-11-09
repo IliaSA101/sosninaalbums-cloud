@@ -1,0 +1,13 @@
+// Управляется Ansible (роль upgrades, design 002 §10): правки руками будут перезаписаны.
+// 52 читается после 50unattended-upgrades: сначала очищается список источников из него (иначе остались бы
+// его шаблоны), затем остаётся один — безопасность Debian.
+#clear Unattended-Upgrade::Origins-Pattern;
+// Старый список Allowed-Origins (если его вернёт чужой файл) тоже очищается: он складывается с Origins-Pattern.
+#clear Unattended-Upgrade::Allowed-Origins;
+Unattended-Upgrade::Origins-Pattern {
+	"origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+// Время — по часам сервера, он в UTC (около 07:00 по Москве).
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";

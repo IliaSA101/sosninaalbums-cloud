@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Поддельный gh для provision_cli (образ gh в shim podman — ENTRYPOINT этого файла): --version, attestation trusted-root и
+# attestation verify. Проверку подписи не делает: сверяет только то, что делает настоящий gh по флагам — метку и коммит
+# (FAKE_GH_REF, FAKE_GH_COMMIT), а ответ строит по FAKE_GH_MODE: ok (по умолчанию), empty, bad_trigger, two_subjects.
+# FAKE_GH_RC — принудительный код; FAKE_GH_VERSION — версия; FAKE_ROOT — файл корня (FAKE_ROOT_FAIL=1 — отказ).
+set -uo pipefail
+printf 'GH %s\n' "$*" >>"${SHIM_LOG:-/dev/null}"
+case ${1:-} in
+	--version)
+		printf 'gh version %s (2026-01-01)\nhttps://github.com/cli/cli/releases/tag/v%s\n' "${FAKE_GH_VERSION:-2.103.3}" "${FAKE_GH_VERSION:-2.103.3}"
+		exit 0
+		;;
+esac
+if [ -n "${FAKE_GH_RC:-}" ]; then
+	echo "fake gh: проверка не прошла (FAKE_GH_RC)" >&2
+	# FAKE_GH_ESC=1: ошибка повторяет управляющие байты из улики (ESC, BEL), как настоящий gh с чужим mediaType.
+	[ "${FAKE_GH_ESC:-}" != 1 ] || printf 'unsupported media type: \033]0;PWNED\007\033[31mred\n' >&2
+	exit "$FAKE_GH_RC"
+fi
+case ${1:-}:${2:-} in
+	attestation:trusted-root)
+		[ "${FAKE_ROOT_FAIL:-}" != 1 ] || exit 1
+		cat -- "${FAKE_ROOT:?}"
+		;;
+	attestation:verify)
+		man=${3:?} ref='' commit='' wf=''
+		args=("$@")
+		for ((i = 0; i < ${#args[@]}; i++)); do
+			case ${args[i]} in
+				--source-ref) ref=${args[i + 1]} ;;
+				--signer-workflow) wf=${args[i + 1]} ;;
+				--source-digest) commit=${args[i + 1]} ;;
+			esac
+		done
+		[ -z "${FAKE_GH_REF:-}" ] || [ "$ref" = "$FAKE_GH_REF" ] || exit 1
+		[ -z "${FAKE_GH_COMMIT:-}" ] || [ "$commit" = "$FAKE_GH_COMMIT" ] || exit 1
+		d=$(sha256sum <"$man" | cut -d' ' -f1)
+		trig=push
+		[ "${FAKE_GH_MODE:-}" != bad_trigger ] || trig=workflow_dispatch
+		[ "${FAKE_GH_MODE:-}" != empty ] || exit 0
+		extra=''
+		[ "${FAKE_GH_MODE:-}" != two_subjects ] || extra=",other@$d"
+		# buildConfigURI и buildSignerURI — workflow@ref из флагов (как их выписал бы Fulcio); bad_uri — подпись от другого файла.
+		uri="https://github.com/${wf}@${ref}"
+		suri=$uri
+		[ "${FAKE_GH_MODE:-}" != bad_uri ] || suri="https://github.com/${wf%/*}/other.yml@${ref}"
+		printf '1440574753\t%s\tgithub-hosted\tpublic\t%s\t%s\tghcr.io/iliasa101/albums-svc@%s%s\n' "$trig" "$uri" "$suri" "$d" "$extra"
+		;;
+	*) exit 2 ;;
+esac

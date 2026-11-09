@@ -1,0 +1,20 @@
+---
+# acl — нужен модулям под не-root (become_user: albums без него упал бы, design §4); sudo — вход
+# администратора по паролю; systemd-timesyncd — часы сервера (сторож часов сервиса, 001 §3).
+- name: Пакеты базовой настройки
+  ansible.builtin.apt:
+    name:
+      - acl
+      - sudo
+      - openssh-server
+      - systemd-timesyncd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Синхронизация времени включена
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    # В контейнере (стенд) юнит по условию не запускается; повторный start считался бы изменением.
+    state: "{{ omit if ansible_facts['virtualization_type'] | default('') in bootstrap_container_types else 'started' }}"

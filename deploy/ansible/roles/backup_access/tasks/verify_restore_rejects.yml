@@ -1,0 +1,152 @@
+---
+# verify_restore_rejects (design 002 §11, §12): sa-restore отвергает архивы с симлинком, жёсткой ссылкой, «..»,
+# абсолютным путём, чужим корнем, без SA-END и длиннее предела; хороший архив — распаковывается от uid работника;
+# каталог data/ рядом не тронут, временных каталогов не остаётся. Положительный контроль — раньше отрицательных.
+# Скрипт — backup_access_restore_script (по умолчанию установленный): стенд подставляет ослабленную копию (-e) и
+# требует, чтобы проверка покраснела (мутации, deploy/tests/provision/verify.sh).
+- name: Проверка verify_restore_rejects — рабочий каталог
+  ansible.builtin.command:
+    argv: [mktemp, -d, /var/tmp/sa-restore-test.XXXXXX]
+  register: backup_access_restore_work
+  changed_when: false
+  tags: [verify_restore_rejects]
+
+- name: Проверка verify_restore_rejects — всё под одним каталогом, он удаляется всегда
+  when: backup_access_restore_work.stdout is regex('^/var/tmp/sa-restore-test\.[A-Za-z0-9]{6}\Z')
+  tags: [verify_restore_rejects]
+  block:
+    - name: Каталог «рядом с data» со сторожевым файлом
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          mkdir -p parent/data
+          printf sentinel > parent/data/keep
+          mkdir arch
+          chmod 0755 . parent
+          printf 'albums:%s:1000\n' "{{ backup_access_test_uid }}" > subuid
+          printf 'albums:%s:1000\n' "{{ backup_access_test_gid }}" > subgid
+          printf 'albums:0:1000\n' > subid0
+        chdir: "{{ backup_access_restore_work.stdout }}"
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Архивы (хороший и плохие)
+      ansible.builtin.command:
+        argv: [python3, -I, "-", "{{ backup_access_restore_work.stdout }}/arch", "{{ backup_access_test_limit }}"]
+        stdin: "{{ lookup('ansible.builtin.file', 'make_archives.py') }}"
+        chdir: /
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Положительный контроль — хороший архив
+      ansible.builtin.command:
+        argv:
+          - "{{ backup_access_restore_script }}"
+          - "{{ backup_access_restore_work.stdout }}/arch/good.tar.zst"
+          - "{{ backup_access_test_uid }}"
+          - "{{ backup_access_test_gid }}"
+          - "{{ backup_access_test_limit }}"
+          - "{{ backup_access_restore_work.stdout }}/parent"
+          - "0"
+      environment:
+        SA_RESTORE_SUBUID_FILE: "{{ backup_access_restore_work.stdout }}/subuid"
+        SA_RESTORE_SUBGID_FILE: "{{ backup_access_restore_work.stdout }}/subgid"
+      register: backup_access_restore_good
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Результат хорошего архива — каталоги, файлы, владелец (работает uid сервиса), без SA-END
+      ansible.builtin.command:
+        argv:
+          - find
+          - "{{ backup_access_restore_good.stdout_lines | last }}"
+          - -printf
+          - "%P %u %y\n"
+      register: backup_access_restore_good_tree
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Положительный контроль — состав и владелец
+      ansible.builtin.assert:
+        that:
+          - backup_access_restore_good_tree.stdout_lines | select('match', '^data/LAYOUT ' ~ backup_access_test_uid ~ ' f$') | list | length == 1
+          - backup_access_restore_good_tree.stdout_lines | select('match', '^conf/config\.json ' ~ backup_access_test_uid ~ ' f$') | list | length == 1
+          - backup_access_restore_good_tree.stdout_lines | select('match', 'SA-END') | list | length == 0
+          - backup_access_restore_good.stdout_lines | last is regex('^' ~ (backup_access_restore_work.stdout | regex_escape)
+            ~ '/parent/\.restore\.[A-Za-z0-9]{6}/new\Z')
+        quiet: true
+        fail_msg: хороший архив распакован не так (состав, владелец — uid работника, метка SA-END удалена)
+      tags: [verify_restore_rejects]
+
+    - name: Временный каталог хорошего прогона убран (его место займёт плей возврата)
+      ansible.builtin.file:
+        path: "{{ (backup_access_restore_good.stdout_lines | last) | dirname }}"
+        state: absent
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Плохие архивы — отказ sa-restore (код 1, причина, ничего не осталось)
+      ansible.builtin.command:
+        argv:
+          - "{{ backup_access_restore_script }}"
+          - "{{ backup_access_restore_work.stdout }}/arch/{{ item.archive | default(item.name) }}.tar.zst"
+          - "{{ item.uid | default(backup_access_test_uid) }}"
+          - "{{ item.gid | default(item.uid | default(backup_access_test_gid)) }}"
+          - "{{ backup_access_test_limit }}"
+          - "{{ backup_access_restore_work.stdout }}/parent"
+          - "{{ item.reserve | default('0') }}"
+      environment:
+        SA_RESTORE_SUBUID_FILE: "{{ backup_access_restore_work.stdout }}/{{ item.ids | default('subuid') }}"
+        SA_RESTORE_SUBGID_FILE: "{{ backup_access_restore_work.stdout }}/{{ item.ids | default('subgid') }}"
+        SA_RESTORE_MAX_MEMBERS: "{{ item.members | default('500000') }}"
+      register: backup_access_restore_bad
+      loop:
+        - {name: symlink, reason: ссылка}
+        - {name: hardlink, reason: ссылка}
+        - {name: dotdot, reason: компонент \.\.}
+        - {name: absolute, reason: абсолютный путь}
+        - {name: foreign, reason: вне data/ и conf/}
+        - {name: nomarker, reason: нет метки конца SA-END}
+        - {name: toolong, reason: длиннее предела}
+        - {name: mtime, reason: дата или время}
+        - {name: charset, reason: недопустимые знаки}
+        - {name: dirs, reason: сумма размеров}
+        - {name: many, reason: слишком много членов, members: "20"}
+        - {name: space, archive: good, reason: не хватает места, reserve: "100000000000000"}
+        - {name: uid_range, archive: good, reason: uid работника вне диапазона, uid: "1000", gid: "59000"}
+        - {name: gid_range, archive: good, reason: gid работника вне диапазона, gid: "1000"}
+        - {name: root, archive: good, reason: не может быть root, uid: "0", gid: "0", ids: subid0}
+        - {name: fifo, reason: устройство}
+        - {name: deep, reason: слишком глубокий путь}
+        - {name: namelen, reason: слишком длинное имя}
+        - {name: fanout, reason: сумма размеров}
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+      failed_when: "backup_access_restore_bad.rc | default(0) != 1 or backup_access_restore_bad.stderr is not regex('отказ: .*' ~ item.reason)"
+      tags: [verify_restore_rejects]
+
+    - name: После отказов — data/ не тронут, временных каталогов нет
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -eo pipefail
+          test "$(cat parent/data/keep)" = sentinel
+          test "$(ls -A parent | tr '\n' ' ')" = 'data '
+        chdir: "{{ backup_access_restore_work.stdout }}"
+      changed_when: false
+      tags: [verify_restore_rejects]
+
+    - name: Разбор и распаковка идут от uid работника (setpriv без повышения прав)
+      ansible.builtin.command:
+        argv: [grep, -c, -E, 'setpriv --reuid="\$uid" --regid="\$gid" --clear-groups --no-new-privs --inh-caps=-all', "{{ backup_access_restore_script }}"]
+      changed_when: false
+      tags: [verify_restore_rejects]
+  always:
+    - name: Рабочий каталог проверки удалён
+      ansible.builtin.file:
+        path: "{{ backup_access_restore_work.stdout }}"
+        state: absent
+      changed_when: false
+      when: backup_access_restore_work.stdout is regex('^/var/tmp/sa-restore-test\.[A-Za-z0-9]{6}\Z')
+      tags: [verify_restore_rejects]
