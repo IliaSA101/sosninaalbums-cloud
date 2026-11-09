@@ -1,0 +1,13 @@
+# Только стенд: ключи хоста — при первом запуске контейнера, как у облачного образа (в образе их нет,
+# иначе все стенды делили бы один ключ хоста).
+[Unit]
+Description=Ключи хоста sshd для стенда
+Before=ssh.service
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

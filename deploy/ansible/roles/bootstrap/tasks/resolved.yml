@@ -1,0 +1,61 @@
+---
+# LLMNR и mDNS выключены (спека 005, 005-11, 005-31). По умолчанию systemd-resolved слушает tcp/udp 5355 (LLMNR) на всех
+# адресах: на первой раскатке это нашёл `ss -tulnp`. nftables держит порт закрытым снаружи, но служба на 0.0.0.0 — это
+# правило «второго рубежа» (verify_listeners), а ни LLMNR, ни mDNS серверу не нужны.
+# Служба не установлена — drop-in безвреден (файл лежит), самопроверка пропускается.
+- name: Каталог drop-in systemd-resolved
+  ansible.builtin.file:
+    path: "{{ bootstrap_resolved_dropin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop-in systemd-resolved без LLMNR и mDNS
+  ansible.builtin.copy:
+    dest: "{{ bootstrap_resolved_dropin }}"
+    content: |
+      # Управляется Ansible (роль bootstrap). Имя 99-: побеждает последний файл по порядку имён.
+      [Resolve]
+      LLMNR=no
+      MulticastDNS=no
+    owner: root
+    group: root
+    mode: "0644"
+  register: bootstrap_resolved_dropin_result
+
+- name: Службы хоста (для проверки systemd-resolved)
+  ansible.builtin.service_facts:
+
+# Живые настройки LLMNR и mDNS (resolvectl status, до перезапуска): `+LLMNR` или `+mDNS` в строке Protocols значит, что служба
+# работает со включённым протоколом (например, drop-in правили руками и не перезапустили, или его кто-то перекрыл).
+# Файл при этом не менялся, и перезапуск только по изменению drop-in оставил бы 5355 открытым до самопроверки.
+- name: Состояние LLMNR и mDNS до перезапуска (resolvectl status)
+  ansible.builtin.command: resolvectl status
+  environment:
+    LC_ALL: C
+  register: bootstrap_resolved_before
+  changed_when: false
+  when: bootstrap_resolved_running | bool
+
+# Перезапуск ДО самопроверки: иначе первый configure видел бы старое состояние службы и падал на собственной правке.
+# При изменении drop-in или при включённых LLMNR/mDNS в живых настройках; повторный прогон на исправной службе ничего не меняет.
+# reset-failed перед перезапуском: после нескольких перезапусков подряд служба упирается в StartLimitBurst и отказывает
+# («start of the service was attempted too often»); сброс счётчика дешёв и безвреден, когда лимита нет.
+- name: Сброс счётчика запусков systemd-resolved
+  ansible.builtin.command: systemctl reset-failed systemd-resolved  # noqa: command-instead-of-module
+  changed_when: false
+  when:
+    - bootstrap_resolved_running | bool
+    - bootstrap_resolved_dropin_result is changed or bootstrap_resolved_before.stdout is search('[+]LLMNR|[+]mDNS')
+
+- name: Перезапуск systemd-resolved, чтобы drop-in вступил в силу
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    state: restarted
+  when:
+    - bootstrap_resolved_running | bool
+    - bootstrap_resolved_dropin_result is changed or bootstrap_resolved_before.stdout is search('[+]LLMNR|[+]mDNS')
+
+- name: Самопроверка systemd-resolved (LLMNR и mDNS выключены)
+  ansible.builtin.include_tasks: resolved_check.yml

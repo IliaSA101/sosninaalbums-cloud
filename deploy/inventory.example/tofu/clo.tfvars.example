@@ -1,0 +1,8 @@
+# Пример ~/inventory/tofu/clo.tfvars. Секретов здесь нет и быть не должно: ключ доступа к API провайдера
+# — только в файле секретов раскатки; provision.sh отказывает, если в *.tfvars встретится это слово.
+# Домен (PTR) подставляет provision.sh из provision.env. Значения выдуманные.
+api_url        = "https://api.example.org"
+project_id     = "00000000-0000-0000-0000-000000000000"
+server_name    = "albums-example"
+keypair_name   = "albums-example-key"
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyOnlyNotARealKeyxxxxxxxxxxxxxxxx sa-server"

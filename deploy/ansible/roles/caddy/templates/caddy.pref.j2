@@ -1,0 +1,9 @@
+# Caddy — ровно {{ caddy_version }} из репозитория Caddy (приоритет 1001 допускает и откат). Всё остальное из этого
+# репозитория отключено (-1): unattended-upgrades Caddy не трогает, исправления — правкой версии в роли.
+Package: caddy
+Pin: version {{ caddy_version }}*
+Pin-Priority: 1001
+
+Package: *
+Pin: origin "dl.cloudsmith.io"
+Pin-Priority: -1

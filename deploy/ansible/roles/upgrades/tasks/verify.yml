@@ -1,0 +1,37 @@
+---
+# Проверки роли (design 002 §10, §12): итоговая конфигурация apt, а не файлы — так видно и чужие
+# шаблоны из 50unattended-upgrades, если очистка не сработала.
+- name: "Проверка verify_upgrades: итоговая конфигурация apt"
+  ansible.builtin.command: apt-config dump
+  register: upgrades_apt_dump
+  changed_when: false
+  tags: [verify_upgrades]
+
+- name: "Проверка verify_upgrades: таймеры apt"
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+  register: upgrades_timers
+  tags: [verify_upgrades]
+
+- name: "Проверка verify_upgrades: только безопасность Debian, раз в сутки, перезагрузка в 04:00"
+  ansible.builtin.assert:
+    that:
+      - upgrades_patterns | length == 1
+      - upgrades_allowed | length == 0
+      - upgrades_patterns[0] == upgrades_expected
+      - '"APT::Periodic::Unattended-Upgrade \"1\";" in upgrades_apt_dump.stdout_lines'
+      - '"APT::Periodic::Update-Package-Lists \"1\";" in upgrades_apt_dump.stdout_lines'
+      - '"Unattended-Upgrade::Automatic-Reboot \"true\";" in upgrades_apt_dump.stdout_lines'
+      - '"Unattended-Upgrade::Automatic-Reboot-Time \"04:00\";" in upgrades_apt_dump.stdout_lines'
+      - upgrades_timers.results | map(attribute='status.UnitFileState') | unique | list == ['enabled']
+    quiet: true
+    fail_msg: unattended-upgrades расходится с design §10 (источники, периодичность, перезагрузка)
+  vars:
+    # codename подставляет сам unattended-upgrades при запуске, apt-config показывает шаблон как есть.
+    upgrades_expected: 'Unattended-Upgrade::Origins-Pattern:: "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";'
+    upgrades_allowed: "{{ upgrades_apt_dump.stdout_lines | select('match', '^Unattended-Upgrade::Allowed-Origins::') | list }}"
+    upgrades_patterns: "{{ upgrades_apt_dump.stdout_lines | select('match', '^Unattended-Upgrade::Origins-Pattern::') | list }}"
+  tags: [verify_upgrades]

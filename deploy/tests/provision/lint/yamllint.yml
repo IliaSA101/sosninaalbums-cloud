@@ -1,0 +1,18 @@
+---
+# yamllint для YAML раскатки (запуск: run.sh yamllint, с -s: предупреждения тоже провал).
+# Поблажки — только там, где они расходятся с практикой Ansible, а не «чтобы прошло».
+extends: default
+
+rules:
+  # Длинные русские пояснения и пути в одной строке: как у ansible-lint (там предел отключён).
+  line-length: disable
+  # Ansible пишет true/false; yes/no и «on» (ключ YAML 1.1) не нужны.
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

@@ -1,0 +1,32 @@
+# Управляется Ansible (роль bootstrap, design 002 §7): правки руками будут перезаписаны.
+# Debian берёт первое значение директивы, а 00-sa читается раньше 50-cloud-init.conf и основного файла (но не
+# раньше любого имени: см. ниже).
+# Match здесь нет: пользователь бэкапа ограничен в его authorized_keys (restrict,command=).
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+# Другие дороги к входу мимо ~/.ssh/authorized_keys (ключи из команды, принципалы, ключи удостоверяющего центра,
+# вход по хосту и Kerberos) закрыты явно. Первое значение побеждает, но порядок чтения — не гарантия: раньше нашего
+# файла могут читаться drop-in с именем «00-cloud…», «000-…» и директивы основного sshd_config до строки Include.
+# Поэтому итоговые значения проверяет sshd -T (sshd_effective.yml) до закрытия root: чужое значение выше нашего
+# роняет прогон.
+AuthorizedKeysFile .ssh/authorized_keys
+AuthorizedKeysCommand none
+AuthorizedPrincipalsCommand none
+AuthorizedPrincipalsFile none
+TrustedUserCAKeys none
+HostbasedAuthentication no
+GSSAPIAuthentication no
+PermitUserEnvironment no
+AllowUsers {{ admin_user }} {{ backup_user }}
+DisableForwarding yes
+AllowTcpForwarding no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+MaxAuthTries 3
+LoginGraceTime 30
+# Подбор пароля невозможен (только ключ); от шума и исчерпания слотов — штрафы источникам (OpenSSH 10).
+MaxStartups 10:30:60
+PerSourcePenalties yes

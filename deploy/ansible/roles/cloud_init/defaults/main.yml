@@ -1,0 +1,4 @@
+---
+# Полное выключение cloud-init (/etc/cloud/cloud-init.disabled): по умолчанию нет, пока пробная аренда не
+# покажет, что настройка сети записана в файл и без cloud-init поднимается (design 002 §10, §13.3).
+cloud_init_disable: false

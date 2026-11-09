@@ -1,0 +1,52 @@
+---
+# Итоговая конфигурация — как её прочтёт cloud-init (read_conf_with_confd): списки равны спискам образа без
+# запрещённых модулей, самих запрещённых нет. Общая для main.yml (сразу после записи, падает прогон) и
+# verify.yml (verify_cloud_init).
+- name: "Проверка verify_cloud_init: списки образа без нашего файла"
+  ansible.builtin.command:
+    argv: [python3, -I, "-", base]
+    stdin: "{{ cloud_init_script }}"
+    chdir: /
+  register: cloud_init_eff_base
+  changed_when: false
+  tags: [verify_cloud_init]
+
+- name: "Проверка verify_cloud_init: итоговые списки, как их увидит cloud-init"
+  ansible.builtin.command:
+    argv: [python3, -I, "-", full]
+    stdin: "{{ cloud_init_script }}"
+    chdir: /
+  register: cloud_init_eff_full
+  changed_when: false
+  tags: [verify_cloud_init]
+
+# Файлы экземпляра (cloud-config, vendor-cloud-config, vendor2-cloud-config, /run/cloud-init/cloud.cfg) с
+# запрещёнными модулями: провал с именем файла, а не безымянное «списки не равны».
+- name: "Проверка verify_cloud_init: запрещённые модули в cloud-config экземпляра и /run/cloud-init"
+  ansible.builtin.assert:
+    that: (cloud_init_eff_full.stdout | from_json).banned_sources | length == 0
+    quiet: true
+    fail_msg: >-
+      запрещённые модули пользователей, паролей или ключей заданы вне cloud.cfg.d, где роль их не переопределит:
+      {{ (cloud_init_eff_full.stdout | from_json).banned_sources | join('; ') }}
+  tags: [verify_cloud_init]
+
+- name: "Проверка verify_cloud_init: итоговые списки — списки образа без users_groups, set_passwords, ssh, ssh_import_id"
+  ansible.builtin.assert:
+    that:
+      - cloud_init_full[item] == cloud_init_kept[item]
+      - cloud_init_full[item] | length > 0
+      - cloud_init_banned_present[item] | length == 0
+    quiet: true
+    fail_msg: >-
+      итоговый список {{ item }} в конфигурации cloud-init не равен списку образа без запрещённых модулей
+      (запрещённые записи в нём: {{ cloud_init_banned_present[item] | join(', ') }}): файл, читаемый позже zz-sa.cfg,
+      или правка списков вернули их (смотрите cloud.cfg.d)
+  loop: "{{ cloud_init_stages }}"
+  vars:
+    cloud_init_kept: "{{ (cloud_init_eff_base.stdout | from_json).kept }}"
+    cloud_init_full: "{{ (cloud_init_eff_full.stdout | from_json).lists }}"
+    # Запрещённые записи итоговых списков — по каноническим именам, их считает скрипт (cc_set_passwords,
+    # set-passwords, пробелы и .py — один и тот же модуль).
+    cloud_init_banned_present: "{{ (cloud_init_eff_full.stdout | from_json).banned_present }}"
+  tags: [verify_cloud_init]
